@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HackerRank Admin Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+  <!-- Admin login -->
+  <div id="login-screen" class="login-wrap">
+    <div class="login-card">
+      <h2>⚡ Admin sign in</h2>
+      <p class="muted">Sign in to manage the HackerRank dashboard.</p>
+      <div class="form-row"><input id="admin-user" placeholder="Admin username" autocomplete="username" /></div>
+      <div class="form-row"><input id="admin-pass" type="password" placeholder="Password" autocomplete="current-password" /></div>
+      <div class="form-row"><button id="admin-login-btn" style="flex:1">Sign in</button></div>
+      <div id="admin-login-status" class="status"></div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand">⚡ HackerRank Admin</div>
+      <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="dashboard">Dashboard</button>
+        <button class="tab" data-tab="daily">Daily</button>
+        <button class="tab" data-tab="topics">Topics</button>
+        <button class="tab" data-tab="colleges">Colleges</button>
+        <button class="tab" data-tab="upload">Upload</button>
+      </nav>
+      <div class="top-actions">
+        <span id="hr-pill" class="pill off">HR: not connected</span>
+        <a href="/student" target="_blank" class="muted">Student view ↗</a>
+        <button id="theme-btn" class="ghost sm" title="Toggle theme">☀️</button>
+        <button id="logout-btn" class="ghost sm">Log out</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <!-- DASHBOARD -->
+      <section id="panel-dashboard" class="panel active">
+        <div class="card">
+          <div class="card-head">
+            <h3>Dashboard</h3>
+            <div class="form-row" style="margin:0">
+              <label class="inline-label">College: <select id="dash-college"></select></label>
+              <label class="inline-label">Contest: <select id="dash-contest"></select></label>
+              <button id="contest-add" class="ghost sm">＋ Contest</button>
+              <button id="contest-del" class="ghost sm danger">🗑</button>
+              <button id="share-btn" class="ghost sm">🔗 Share link</button>
+              <button id="connect-btn" class="ghost sm">Connect HackerRank</button>
+              <button id="sync-btn" class="sm">⟳ Sync now</button>
+              <button id="autosync-btn" class="ghost sm">⟳ Run auto-sync (all)</button>
+            </div>
+          </div>
+          <div class="muted" id="auto-sync-note" style="margin-top:2px"></div>
+          <div class="form-row">
+            <label class="inline-label" style="flex:1">Contest link:
+              <input id="dash-contest-url" placeholder="HackerRank contest link for the selected contest" style="flex:1" />
+            </label>
+            <button id="dash-savelink" class="ghost sm">Save link</button>
+          </div>
+          <div id="dash-progress" class="progress hidden"><div class="lab" id="dash-prog-lab"></div><div class="bar"><span id="dash-prog-fill" style="width:0%"></span></div></div>
+          <div id="dash-status" class="status"></div>
+        </div>
+
+        <div id="summary" class="summary-grid hidden"></div>
+
+        <div id="topic-analysis-card" class="card hidden">
+          <div class="card-head"><h3>Topic-wise analysis <span class="muted" id="ta-note"></span></h3><button id="ta-chart-btn" class="ghost sm">📊 Enlarge chart</button></div>
+          <div class="ta-grid">
+            <div id="ta-chart"></div>
+            <div class="table-scroll"><table id="topic-analysis-table" class="data-table"></table></div>
+          </div>
+        </div>
+
+        <div class="cb-grid">
+          <div id="completion-card" class="card hidden">
+            <h3>Completion breakdown <span class="muted" id="cb-note"></span></h3>
+            <p class="muted">How many students solved how many questions. Click a row to see who.</p>
+            <div class="table-scroll"><table id="completion-table" class="data-table"></table></div>
+            <div id="completion-pager" class="pager"></div>
+          </div>
+          <div id="category-card" class="card hidden">
+            <h3>Question categories <span class="muted" id="cat-note"></span></h3>
+            <p class="muted">Solve rate per category across participants.</p>
+            <div id="cat-chart"></div>
+            <div class="table-scroll"><table id="cat-table" class="data-table"></table></div>
+            <h4 style="margin:16px 0 6px">Topic × category completion</h4>
+            <div class="table-scroll"><table id="cat-topic-table" class="data-table"></table></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Students</h3>
+            <div class="form-row" style="margin:0">
+              <select id="f-department"><option value="">All departments</option></select>
+              <select id="f-section"><option value="">All sections</option></select>
+              <select id="f-year"><option value="">All years</option></select>
+              <input id="f-search" placeholder="Search name / username…" style="flex:0 0 200px" />
+              <button id="export-btn" class="ghost sm">⬇ Export Excel</button>
+              <button id="del-btn" class="ghost sm danger">🗑 Delete selected</button>
+            </div>
+          </div>
+          <div class="table-scroll"><table id="students-table" class="data-table"></table></div>
+          <div id="students-pager" class="pager"></div>
+        </div>
+      </section>
+
+      <!-- COLLEGES -->
+      <section id="panel-colleges" class="panel">
+        <div class="card">
+          <h3>Add a college</h3>
+          <p class="muted">Set the student access code (students type it to log into the student view). After adding, add its contest link(s) below.</p>
+          <div class="form-row">
+            <input id="c-name" placeholder="College name" />
+            <input id="c-code" placeholder="Student access code" />
+            <button id="c-add">Add college</button>
+          </div>
+          <div id="c-status" class="status"></div>
+        </div>
+        <div class="card">
+          <h3>Colleges <span class="muted" id="c-count"></span></h3>
+          <p class="muted">For security the saved code isn't shown — you can only overwrite it.</p>
+          <div class="table-scroll"><table id="colleges-table" class="data-table"></table></div>
+        </div>
+
+        <div class="card">
+          <h3>Contest links for a college</h3>
+          <p class="muted">Add one or more HackerRank contest links to a college. Each becomes a contest you can sync (Dashboard) and tag (Topics).</p>
+          <div class="form-row">
+            <label class="inline-label" style="flex:1">College: <select id="cc-college" style="flex:1"></select></label>
+          </div>
+          <div class="form-row">
+            <input id="cc-name" placeholder="Contest name (e.g. Round 1)" />
+            <input id="cc-link" placeholder="HackerRank contest link" />
+            <button id="cc-add">Add contest</button>
+          </div>
+          <div class="form-row">
+            <textarea id="cc-bulk" placeholder="Or paste multiple links, one per line — auto-named Contest 1, 2, 3…" rows="3" style="flex:1;min-width:280px"></textarea>
+            <button id="cc-bulk-add" class="ghost sm">Add all</button>
+          </div>
+          <div id="cc-status" class="status"></div>
+          <div class="table-scroll"><table id="cc-table" class="data-table"></table></div>
+        </div>
+      </section>
+
+      <!-- DAILY -->
+      <section id="panel-daily" class="panel">
+        <div class="card">
+          <div class="card-head">
+            <h3>Daily questions completed <span class="muted" id="daily-note"></span></h3>
+            <div class="form-row" style="margin:0">
+              <label class="inline-label">College: <select id="daily-college"></select></label>
+              <label class="inline-label">Contest: <select id="daily-contest"></select></label>
+            </div>
+          </div>
+          <p class="muted">Questions each student completed per day (from daily snapshots). The first day shown is a baseline, not a same-day count. Every student is listed, whether or not they rank on the leaderboard.</p>
+          <div class="table-scroll"><table id="daily-table" class="data-table"></table></div>
+        </div>
+      </section>
+
+      <!-- TOPICS -->
+      <section id="panel-topics" class="panel">
+        <div class="card">
+          <div class="card-head">
+            <h3>Assign topics to contest questions</h3>
+            <div class="form-row" style="margin:0">
+              <label class="inline-label">College: <select id="t-college"></select></label>
+              <label class="inline-label">Contest: <select id="t-contest-sel"></select></label>
+              <button id="t-autofill" class="ghost sm">Auto-fill from titles</button>
+              <button id="t-save">Save topics</button>
+            </div>
+          </div>
+          <p class="muted">Pick a college, confirm its contest link, then set a topic for each question. These power the “By topic” breakdowns. The contest must be synced first (Dashboard tab).</p>
+          <div class="form-row">
+            <label class="inline-label" style="flex:1">Contest link:
+              <input id="t-contest" placeholder="HackerRank contest link" style="flex:1" />
+            </label>
+            <button id="t-savelink" class="ghost sm">Save link</button>
+          </div>
+          <div id="t-status" class="status"></div>
+          <div class="table-scroll"><table id="topics-table" class="data-table"></table></div>
+        </div>
+
+        <div id="topic-videos-card" class="card hidden">
+          <div class="card-head"><h3>Topic videos</h3><button id="tv-save">Save videos</button></div>
+          <p class="muted">Add a video link (e.g. YouTube) for each topic. Students see a “🎬 Watch” link under that topic. Save the question topics above first so all topics appear here.</p>
+          <div id="tv-status" class="status"></div>
+          <div class="table-scroll"><table id="tv-table" class="data-table"></table></div>
+        </div>
+
+      </section>
+
+      <!-- UPLOAD -->
+      <section id="panel-upload" class="panel">
+        <div class="card">
+          <h3>Upload student roster</h3>
+          <p class="muted">Excel/CSV needs <b>Student Name</b> and <b>HackerRank Username</b> (or profile URL). Optional columns: Register Number, Email, Department, Section, Year, Campus. Add the college in the Colleges tab first.</p>
+          <div class="form-row">
+            <label class="inline-label">College: <select id="up-college"></select></label>
+            <label class="inline-label">Map to contest: <select id="up-contest"></select></label>
+            <input id="up-file" type="file" accept=".xlsx,.xls,.csv" />
+            <button id="up-template" class="ghost sm">⬇ Template</button>
+          </div>
+          <div id="up-status" class="status"></div>
+          <div id="up-detected" class="muted"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Student performance modal -->
+  <div id="perf-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <div class="card-head" style="margin-bottom:6px"><h3 id="perf-title"></h3><button id="perf-close" class="ghost sm">✕</button></div>
+      <div id="perf-meta" class="muted"></div>
+      <div id="perf-stats" class="summary-grid" style="margin:14px 0"></div>
+      <div id="perf-topics" style="margin-bottom:14px"></div>
+      <div class="table-scroll" style="max-height:50vh"><table id="perf-table" class="data-table"></table></div>
+    </div>
+  </div>
+
+  <!-- Topic chart modal -->
+  <div id="ta-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <div class="card-head" style="margin-bottom:6px"><h3 id="ta-modal-title">Topic-wise analysis</h3><button id="ta-modal-close" class="ghost sm">✕</button></div>
+      <div id="ta-modal-chart"></div>
+    </div>
+  </div>
+
+  <!-- Topic × category names modal -->
+  <div id="tc-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <div class="card-head" style="margin-bottom:6px"><h3 id="tc-modal-title"></h3><button id="tc-modal-close" class="ghost sm">✕</button></div>
+      <div class="form-row" style="margin:0 0 8px"><button id="tc-filter-all" class="ghost sm">All</button><button id="tc-filter-done" class="ghost sm">Completed</button><button id="tc-filter-not" class="ghost sm">Not completed</button></div>
+      <div class="table-scroll" style="max-height:56vh"><table id="tc-modal-table" class="data-table"></table></div>
+      <div id="tc-pager" class="pager"></div>
+    </div>
+  </div>
+
+  <!-- Completion breakdown names modal -->
+  <div id="cb-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <div class="card-head" style="margin-bottom:6px"><h3 id="cb-modal-title"></h3><button id="cb-modal-close" class="ghost sm">✕</button></div>
+      <div class="table-scroll" style="max-height:60vh"><table id="cb-modal-table" class="data-table"></table></div>
+      <div id="cb-pager" class="pager"></div>
+    </div>
+  </div>
+
+  <!-- Connect HR modal -->
+  <div id="connect-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Connect your HackerRank account</h3>
+      <p class="muted">Used only to scrape contest leaderboards. Not stored to disk.</p>
+      <div class="form-row"><input id="hr-email" type="email" placeholder="HackerRank email" /></div>
+      <div class="form-row"><input id="hr-pass" type="password" placeholder="Password" /></div>
+      <div class="form-row"><button id="hr-connect-btn" style="flex:1">Connect</button><button id="hr-cancel" class="ghost">Cancel</button></div>
+      <div id="hr-connect-status" class="status"></div>
+    </div>
+  </div>
+
+  <script src="theme.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

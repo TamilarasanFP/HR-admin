@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Contest Dashboard</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">⚡ HackerRank Dashboard</div>
+    <div style="flex:1"></div>
+    <span class="pill" id="view-pill">Read-only</span>
+    <button id="theme-btn" class="ghost sm" title="Toggle theme" style="margin-left:8px">☀️</button>
+  </header>
+
+  <main class="container">
+    <div id="view-status" class="status" style="margin-bottom:12px"></div>
+    <h2 id="view-title" style="margin:6px 0"></h2>
+
+    <div id="summary" class="summary-grid hidden"></div>
+
+    <div id="topic-analysis-card" class="card hidden">
+      <div class="card-head"><h3>Topic-wise analysis <span class="muted" id="ta-note"></span></h3><button id="ta-chart-btn" class="ghost sm">📊 Enlarge chart</button></div>
+      <div class="ta-grid">
+        <div id="ta-chart"></div>
+        <div class="table-scroll"><table id="topic-analysis-table" class="data-table"></table></div>
+      </div>
+    </div>
+
+    <div class="cb-grid">
+      <div id="completion-card" class="card hidden">
+        <h3>Completion breakdown <span class="muted" id="cb-note"></span></h3>
+        <p class="muted">How many students solved how many questions. Click a row to see who.</p>
+        <div class="table-scroll"><table id="completion-table" class="data-table"></table></div>
+        <div id="completion-pager" class="pager"></div>
+      </div>
+      <div id="category-card" class="card hidden">
+        <h3>Question categories <span class="muted" id="cat-note"></span></h3>
+        <p class="muted">Solve rate per category across participants.</p>
+        <div id="cat-chart"></div>
+        <div class="table-scroll"><table id="cat-table" class="data-table"></table></div>
+        <h4 style="margin:16px 0 6px">Topic × category completion</h4>
+        <div class="table-scroll"><table id="cat-topic-table" class="data-table"></table></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Students</h3>
+        <div class="form-row" style="margin:0">
+          <select id="f-department"><option value="">All departments</option></select>
+          <select id="f-section"><option value="">All sections</option></select>
+          <select id="f-year"><option value="">All years</option></select>
+          <input id="f-search" placeholder="Search name / username…" style="flex:0 0 200px" />
+        </div>
+      </div>
+      <div class="table-scroll"><table id="students-table" class="data-table"></table></div>
+      <div id="students-pager" class="pager"></div>
+    </div>
+  </main>
+
+  <!-- Topic chart modal -->
+  <div id="ta-modal" class="modal-overlay hidden"><div class="modal wide"><div class="card-head" style="margin-bottom:6px"><h3>Topic-wise analysis</h3><button id="ta-modal-close" class="ghost sm">✕</button></div><div id="ta-modal-chart"></div></div></div>
+
+  <!-- Completion names modal -->
+  <div id="cb-modal" class="modal-overlay hidden"><div class="modal wide"><div class="card-head" style="margin-bottom:6px"><h3 id="cb-modal-title"></h3><button id="cb-modal-close" class="ghost sm">✕</button></div><div class="table-scroll" style="max-height:60vh"><table id="cb-modal-table" class="data-table"></table></div><div id="cb-pager" class="pager"></div></div></div>
+
+  <!-- Topic × category names modal -->
+  <div id="tc-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <div class="card-head" style="margin-bottom:6px"><h3 id="tc-modal-title"></h3><button id="tc-modal-close" class="ghost sm">✕</button></div>
+      <div class="form-row" style="margin:0 0 8px"><button id="tc-filter-all" class="ghost sm">All</button><button id="tc-filter-done" class="ghost sm">Completed</button><button id="tc-filter-not" class="ghost sm">Not completed</button></div>
+      <div class="table-scroll" style="max-height:56vh"><table id="tc-modal-table" class="data-table"></table></div>
+      <div id="tc-pager" class="pager"></div>
+    </div>
+  </div>
+
+  <!-- Performance modal -->
+  <div id="perf-modal" class="modal-overlay hidden">
+    <div class="modal wide">
+      <div class="card-head" style="margin-bottom:6px"><h3 id="perf-title"></h3><button id="perf-close" class="ghost sm">✕</button></div>
+      <div id="perf-meta" class="muted"></div>
+      <div id="perf-stats" class="summary-grid" style="margin:14px 0"></div>
+      <div id="perf-topics" style="margin-bottom:14px"></div>
+      <div class="table-scroll" style="max-height:50vh"><table id="perf-table" class="data-table"></table></div>
+    </div>
+  </div>
+
+  <script src="/theme.js"></script>
+  <script src="/view.js"></script>
+</body>
+</html>

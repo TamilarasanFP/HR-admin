@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Student Practice Portal</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">⚡ Student Practice</div>
+    <div style="flex:1"></div>
+    <div id="who" class="pill hidden"></div>
+    <button id="theme-btn" class="ghost sm" title="Toggle theme">☀️</button>
+    <button id="logout-btn2" class="ghost sm hidden">Log out</button>
+  </header>
+
+  <!-- Login (centered card) -->
+  <main id="login-main" class="container narrow">
+    <section id="login-view" class="card">
+      <h2>Log in</h2>
+      <p class="muted">Enter your college name and the access code your admin gave you, then pick your name.</p>
+      <div class="form-row"><input id="college" placeholder="College name" /></div>
+      <div class="form-row"><input id="code" placeholder="Access code" /></div>
+      <div class="form-row" id="name-row" style="display:none"><select id="name-select" style="flex:1"></select></div>
+      <div class="form-row" id="contest-row" style="display:none"><select id="contest-select" style="flex:1"></select></div>
+      <div class="form-row"><button id="continue-btn" style="flex:1">Continue</button></div>
+      <div id="login-status" class="status"></div>
+    </section>
+  </main>
+
+  <!-- Practice (full width) -->
+  <section id="practice-main" class="practice-wrap hidden">
+    <div class="form-row" style="justify-content:flex-end;margin-bottom:6px"><label class="inline-label">Contest: <select id="sv-contest-switch"></select></label></div>
+    <div class="practice-hero" id="sv-header"></div>
+
+    <nav class="subtabs" id="sv-tabs">
+      <button class="subtab active" data-sec="dashboard">Dashboard</button>
+      <button class="subtab" data-sec="practice">Practice</button>
+    </nav>
+
+    <div id="sv-dashboard" class="sv-section active">
+      <div id="sv-stats" class="summary-grid"></div>
+      <h3 style="margin:8px 0 10px">Topic completion</h3>
+      <div id="sv-topics" class="tc-list"></div>
+    </div>
+
+    <div id="sv-practice" class="sv-section">
+      <div class="q-list" id="sv-list"></div>
+      <div id="sv-pager" class="pager"></div>
+    </div>
+
+    <div style="text-align:center;margin:22px 0 40px"><button id="logout-btn" class="ghost">Log out</button></div>
+  </section>
+
+  <!-- In-app video player -->
+  <div id="vid-overlay" class="frame-overlay hidden">
+    <div class="frame-bar">
+      <button id="vid-back" class="ghost sm">← Back</button>
+      <span id="vid-title" class="frame-title" style="flex:1">Video</span>
+    </div>
+    <iframe id="vid-frame" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+  </div>
+
+  <script src="theme.js"></script>
+  <script src="student.js"></script>
+</body>
+</html>

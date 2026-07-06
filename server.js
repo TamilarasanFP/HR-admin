@@ -1,0 +1,423 @@
+import express from 'express';
+import crypto from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { login, parseContestSlug, fetchAllLeaderboard, buildMatrix } from './lib/hackerrank.js';
+import { buildMockDashboard } from './lib/mock.js';
+import * as db from './lib/db.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const app = express();
+const PORT = process.env.PORT || 4000;
+const MOCK = process.env.MOCK === '1';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
+const HR_EMAIL = process.env.HR_EMAIL || '';
+const HR_PASS = process.env.HR_PASS || '';
+const AUTO_SYNC = process.env.AUTO_SYNC === '1';
+const AUTO_TIMES = (process.env.AUTO_SYNC_TIMES || '06:00,18:00').split(',').map((s) => s.trim()).filter(Boolean);
+
+app.use(express.json({ limit: '12mb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ---------------- Admin auth (token-based) ----------------
+const adminTokens = new Set();
+const hrSessions = new Map(); // hr login sessions for scraping: token -> {jar,csrfToken}
+
+app.post('/api/admin/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (username === ADMIN_USER && password === ADMIN_PASS) {
+    const token = crypto.randomUUID();
+    adminTokens.add(token);
+    return res.json({ ok: true, token, defaultCreds: ADMIN_USER === 'admin' && ADMIN_PASS === 'admin' });
+  }
+  res.status(401).json({ error: 'Invalid admin username or password.' });
+});
+function requireAdmin(req, res, next) {
+  const t = req.get('x-admin-token') || req.query.adminToken;
+  if (t && adminTokens.has(t)) return next();
+  res.status(401).json({ error: 'Admin authentication required.' });
+}
+
+function slugFromUrl(url) { const u = String(url || '').trim(); if (!u) return ''; try { return parseContestSlug(u); } catch { return ''; } }
+
+// ---------------- Colleges ----------------
+app.get('/api/colleges', requireAdmin, async (_req, res) => { try { res.json({ colleges: await db.listColleges() }); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.post('/api/colleges', requireAdmin, async (req, res) => {
+  try {
+    const { name, accessCode, contestUrl } = req.body || {};
+    const c = await db.addCollege({ name, accessCode: accessCode || '', contestUrl: contestUrl || '', slug: slugFromUrl(contestUrl) });
+    res.json({ ok: true, college: c });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put('/api/colleges/:id', requireAdmin, async (req, res) => {
+  try {
+    const { accessCode, contestUrl } = req.body || {};
+    const fields = {};
+    if (accessCode !== undefined) fields.accessCode = accessCode;
+    if (contestUrl !== undefined) { fields.contestUrl = contestUrl; fields.slug = slugFromUrl(contestUrl); }
+    const c = await db.updateCollege(req.params.id, fields);
+    if (!c) return res.status(404).json({ error: 'College not found.' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/colleges/:id', requireAdmin, async (req, res) => { try { res.json({ ok: await db.deleteCollege(req.params.id) }); } catch (e) { res.status(500).json({ error: e.message }); } });
+
+// ---------------- Contests (many per college) ----------------
+app.get('/api/contests', requireAdmin, async (req, res) => {
+  try {
+    let college;
+    if (req.query.collegeId) { const c = (await db.listColleges()).find((x) => String(x.id) === String(req.query.collegeId)); college = c?.name; }
+    else if (req.query.college) college = String(req.query.college);
+    res.json({ contests: await db.listContests(college) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/contests', requireAdmin, async (req, res) => {
+  try {
+    const { collegeId, name, contestUrl } = req.body || {};
+    const col = (await db.listColleges()).find((x) => String(x.id) === String(collegeId));
+    if (!col) return res.status(400).json({ error: 'College not found.' });
+    const c = await db.addContest({ college: col.name, name, contestUrl: contestUrl || '', slug: slugFromUrl(contestUrl) });
+    res.json({ ok: true, contest: c });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put('/api/contests/:id', requireAdmin, async (req, res) => {
+  try {
+    const { name, contestUrl } = req.body || {};
+    const fields = {};
+    if (name !== undefined) fields.name = name;
+    if (contestUrl !== undefined) { fields.contestUrl = contestUrl; fields.slug = slugFromUrl(contestUrl); }
+    const c = await db.updateContest(req.params.id, fields);
+    if (!c) return res.status(404).json({ error: 'Contest not found.' });
+    res.json({ ok: true, contest: c });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/contests/:id', requireAdmin, async (req, res) => { try { res.json({ ok: await db.deleteContest(req.params.id) }); } catch (e) { res.status(500).json({ error: e.message }); } });
+// Create (or return existing) a read-only share link for a contest.
+app.post('/api/contests/:id/share', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.id);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    let token = contest.shareToken;
+    if (!token) { token = crypto.randomBytes(9).toString('hex'); await db.setContestShareToken(contest.id, token); }
+    res.json({ ok: true, token });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- Students (roster) ----------------
+app.get('/api/students', requireAdmin, async (req, res) => {
+  try {
+    const { college, department, section, year, contestId } = req.query;
+    if (contestId) return res.json({ students: await db.listStudentsForContest(contestId) });
+    res.json({ students: await db.listStudents({ college, department, section, year }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/students/upload', requireAdmin, async (req, res) => {
+  try {
+    const { college, students, contestId } = req.body || {};
+    if (!college || !Array.isArray(students)) return res.status(400).json({ error: 'Expected { college, students: [...] }.' });
+    const r = await db.upsertStudents(college, students);
+    let assigned = 0;
+    if (contestId) assigned = await db.assignStudentsToContest(contestId, students.map((s) => String(s.hrUsername || '').toLowerCase()).filter(Boolean));
+    res.json({ ok: true, ...r, assigned });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete('/api/students', requireAdmin, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    res.json({ ok: true, deleted: await db.deleteStudents(ids) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- HackerRank connect + scrape ----------------
+app.post('/api/hr/connect', requireAdmin, async (req, res) => {
+  try {
+    if (MOCK) { const t = crypto.randomUUID(); hrSessions.set(t, { mock: true }); return res.json({ ok: true, hrToken: t, mock: true }); }
+    const { email, password } = req.body || {};
+    const { jar, csrfToken } = await login(email, password);
+    const t = crypto.randomUUID(); hrSessions.set(t, { jar, csrfToken });
+    res.json({ ok: true, hrToken: t });
+  } catch (e) { res.status(401).json({ error: e.message }); }
+});
+
+function assembleDashboard({ slug, contest, leaderboard, questions, userMap, reference }) {
+  const users = leaderboard.map((entry) => {
+    const status = userMap.get(entry.username) || {}; let solved = 0, attempted = 0, score = 0;
+    const questionStatus = {};
+    for (const q of questions) {
+      const cell = status[q.name];
+      if (cell) { questionStatus[q.name] = cell; if (cell.solved) solved++; if (cell.attempted) attempted++; score += cell.score || 0; }
+      else questionStatus[q.name] = { score: 0, points: q.points, attempted: false, solved: false };
+    }
+    return { username: entry.username, rank: entry.rank, computedScore: score, solved, attempted, questionStatus };
+  });
+  const totalSolves = users.reduce((a, u) => a + u.solved, 0); const qc = questions.length;
+  return {
+    contest: { slug, name: contest?.name || slug, challengesCount: qc },
+    summary: { totalUsers: users.length, totalQuestions: qc, avgSolved: users.length ? +(totalSolves / users.length).toFixed(2) : 0, overallCompletion: users.length && qc ? Math.round((totalSolves / (users.length * qc)) * 100) : 0 },
+    questions, users, reference,
+  };
+}
+
+// Scrape a college's contest with live progress (SSE).
+app.get('/api/scrape-stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders?.();
+  const send = (ev, d) => res.write(`event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let aborted = false; req.on('close', () => { aborted = true; });
+  try {
+    const { adminToken, hrToken, contestId } = req.query;
+    if (!adminToken || !adminTokens.has(adminToken)) { send('failed', { error: 'Admin auth required.' }); return res.end(); }
+    const session = hrSessions.get(hrToken);
+    if (!session) { send('failed', { error: 'Connect your HackerRank account first.' }); return res.end(); }
+    const ct = await db.getContest(contestId);
+    if (!ct || !ct.slug) { send('failed', { error: 'Contest has no link.' }); return res.end(); }
+    const slug = ct.slug; const max = 1000;
+
+    if (MOCK || session.mock) {
+      const dash = buildMockDashboard(slug, 60); const total = dash.summary.totalUsers;
+      for (let i = 1; i <= total && !aborted; i++) { send('progress', { phase: 'comparing', completed: i, total }); await sleep(15); }
+      if (!aborted) { const saved = await db.saveScrape(slug, dash); send('done', { ...saved, summary: dash.summary, contest: dash.contest }); }
+      return res.end();
+    }
+    const { jar, csrfToken } = session;
+    send('progress', { phase: 'leaderboard', completed: 0, total: 0 });
+    const leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max, onPage: (c) => send('progress', { phase: 'leaderboard', completed: c, total: 0 }) });
+    if (!leaderboard.length) { send('failed', { error: 'No leaderboard entries (check link / access).' }); return res.end(); }
+    const usernames = leaderboard.map((l) => l.username).filter(Boolean);
+    const { reference, contest, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: usernames, reference: usernames[0], concurrency: 8, onProgress: (c, t) => { if (!aborted) send('progress', { phase: 'comparing', completed: c, total: t }); } });
+    if (aborted) return res.end();
+    const dash = assembleDashboard({ slug, contest, leaderboard, questions, userMap, reference });
+    const saved = await db.saveScrape(slug, dash);
+    send('done', { ...saved, summary: dash.summary, contest: dash.contest });
+    res.end();
+  } catch (e) { send('failed', { error: e.message }); res.end(); }
+});
+
+// Topic of a question: admin-assigned, else parsed from "Topic - Title".
+function titleTag(name) { const m = String(name).split(/\s+[–—-]\s+/); return m.length >= 2 ? m[0].trim() : ''; }
+function resolveTopic(saved, name) { return (saved && saved[name]) || titleTag(name) || 'Other'; }
+
+// Latest scrape for a contest (admin) — used by the dashboard students table.
+app.get('/api/contest-dashboard/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    res.json({ contest, college: contest.college, dashboard: dash, topics: contest.slug ? await db.getTopics(contest.slug) : {}, categories: contest.slug ? await db.getQuestionCategories(contest.slug) : {}, students: await db.listStudentsForContest(contest.id) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Topics editor (admin): list questions + current topics for a contest.
+app.get('/api/topics/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const saved = contest.slug ? await db.getTopics(contest.slug) : {};
+    const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
+    const questions = dash ? dash.questions.map((q) => ({ name: q.name, topic: saved[q.name] || '', suggested: titleTag(q.name), category: cats[q.name] || '' })) : [];
+    res.json({ contest, slug: contest.slug, contestUrl: contest.contestUrl || '', hasScrape: !!dash, questions });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/topics/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    res.json({ ok: true, ...(await db.saveTopics(contest.slug, req.body?.map || {})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Distinct topics of a contest (from saved topics / title fallback).
+async function distinctTopics(slug, dash) {
+  const saved = await db.getTopics(slug);
+  const seen = new Set(); const out = [];
+  for (const q of (dash?.questions || [])) { const t = resolveTopic(saved, q.name); if (!seen.has(t)) { seen.add(t); out.push(t); } }
+  return out;
+}
+// Topic videos editor (admin)
+app.get('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const videos = contest.slug ? await db.getTopicVideos(contest.slug) : {};
+    const topics = (await distinctTopics(contest.slug, dash)).map((t) => ({ name: t, videos: videos[t] || [] }));
+    res.json({ contest, hasScrape: !!dash, topics });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    res.json({ ok: true, ...(await db.saveTopicVideos(contest.slug, req.body?.map || {})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Question categories (In-class / Post-class / Challenges)
+app.get('/api/question-categories/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
+    const questions = dash ? dash.questions.map((q) => ({ name: q.name, category: cats[q.name] || '' })) : [];
+    res.json({ contest, hasScrape: !!dash, questions });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/question-categories/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    res.json({ ok: true, ...(await db.saveQuestionCategories(contest.slug, req.body?.map || {})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Per-student daily questions-completed (derived from daily snapshots).
+app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
+ try {
+  const contest = await db.getContest(req.params.contestId);
+  if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+  const series = contest.slug ? await db.getScrapeSeries(contest.slug) : [];
+  const N = Math.min(Math.max(parseInt(req.query.days, 10) || 10, 1), 60); // last N days (default 10)
+  const startIdx = Math.max(0, series.length - N);
+  const days = series.map((s) => s.day).slice(startIdx);
+  const roster = await db.listStudentsForContest(contest.id);
+  const students = roster.map((s) => {
+    const key = (s.usernameKey || s.hrUsername || '').toLowerCase();
+    let prev = 0; const daily = [];
+    for (const snap of series) {
+      const cur = snap.solved[key] != null ? snap.solved[key] : prev; // carry forward if absent
+      daily.push(Math.max(0, cur - prev));
+      prev = cur;
+    }
+    return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, daily: daily.slice(startIdx), total: prev };
+  }).sort((a, b) => b.total - a.total);
+  res.json({ contest: { name: contest.name }, days, students });
+ } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- Student portal (access code) ----------------
+app.post('/api/student/login', async (req, res) => {
+  try {
+    const { college, accessCode } = req.body || {};
+    if (!college || !accessCode) return res.status(400).json({ error: 'College and access code are required.' });
+    if (!(await db.verifyCollegeCode(college, accessCode))) return res.status(401).json({ error: 'Wrong college or access code.' });
+    const c = await db.getCollegeByName(college);
+    const students = (await db.listStudents({ college: c.name })).map((s) => ({ name: s.name, hrUsername: s.hrUsername }));
+    res.json({ ok: true, college: c.name, students });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Contests visible to a specific student (only the ones they're mapped to).
+app.post('/api/student/contests', async (req, res) => {
+  try {
+    const { college, accessCode, hrUsername } = req.body || {};
+    if (!(await db.verifyCollegeCode(college, accessCode))) return res.status(401).json({ error: 'Wrong college or access code.' });
+    const c = await db.getCollegeByName(college);
+    res.json({ contests: (await db.listContestsForStudent(c.name, hrUsername)).map((ct) => ({ id: ct.id, name: ct.name })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/student/practice', async (req, res) => {
+ try {
+  const { college, accessCode, hrUsername, contestId } = req.body || {};
+  if (!(await db.verifyCollegeCode(college, accessCode))) return res.status(401).json({ error: 'Wrong college or access code.' });
+  const c = await db.getCollegeByName(college);
+  // Choose the requested contest, else the college's first contest.
+  const contests = await db.listContests(c.name);
+  const ct = contests.find((x) => String(x.id) === String(contestId)) || contests[0];
+  const slug = ct?.slug || c.slug;
+  const dash = slug ? await db.getLatestScrape(slug) : null;
+  let contest = null, questions = [], stats = null, topicVideos = {};
+  if (dash) {
+    contest = { name: (ct && ct.name) || dash.contest.name };
+    topicVideos = await db.getTopicVideos(slug);
+    const saved = await db.getTopics(slug);
+    const cats = await db.getQuestionCategories(slug);
+    const u = dash.users.find((x) => x.username.toLowerCase() === String(hrUsername).toLowerCase());
+    questions = dash.questions.map((q) => {
+      const st = (u && u.questionStatus[q.name]) || { score: 0, points: q.points, solved: false, attempted: false };
+      return { name: q.name, url: q.url, points: q.points, topic: resolveTopic(saved, q.name), category: cats[q.name] || '', score: st.score || 0, solved: !!st.solved, attempted: !!st.attempted };
+    });
+    const total = dash.questions.length;
+    const sorted = dash.users.slice().sort((a, b) => b.computedScore - a.computedScore);
+    const rank = u ? sorted.findIndex((x) => x.username === u.username) + 1 : null;
+    stats = {
+      inContest: !!u, solved: u ? u.solved : 0, total, score: u ? u.computedScore : 0,
+      attempted: u ? u.attempted : 0, completion: total ? Math.round(((u ? u.solved : 0) / total) * 100) : 0,
+      rank, participants: dash.users.length,
+    };
+  }
+  res.json({ contest, questions, hrUsername, stats, topicVideos });
+ } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- Read-only shared dashboard (token) ----------------
+app.get('/api/shared/:token', async (req, res) => {
+  try {
+    const contest = await db.getContestByShareToken(req.params.token);
+    if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
+    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const topics = contest.slug ? await db.getTopics(contest.slug) : {};
+    const roster = (await db.listStudentsForContest(contest.id))
+      .map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
+    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos: contest.slug ? await db.getTopicVideos(contest.slug) : {}, categories: contest.slug ? await db.getQuestionCategories(contest.slug) : {} });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
+
+app.get('/student', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'student.html')));
+// ---------------- Automatic sync (scheduled) ----------------
+const autoState = { lastRun: null, lastResult: null, running: false };
+async function scrapeAndSave(session, contest) {
+  const slug = contest.slug;
+  if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); return { slug, users: dash.summary.totalUsers }; }
+  const { jar, csrfToken } = session;
+  const leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max: 1000 });
+  if (!leaderboard.length) throw new Error('no leaderboard entries');
+  const usernames = leaderboard.map((l) => l.username).filter(Boolean);
+  const { reference, contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: usernames, reference: usernames[0], concurrency: 8 });
+  const dash = assembleDashboard({ slug, contest: c, leaderboard, questions, userMap, reference });
+  await db.saveScrape(slug, dash);
+  return { slug, users: dash.summary.totalUsers };
+}
+async function autoSyncAll() {
+  if (autoState.running) return;
+  autoState.running = true;
+  try {
+    let session;
+    if (MOCK) session = { mock: true };
+    else { if (!HR_EMAIL || !HR_PASS) throw new Error('HR_EMAIL / HR_PASS env vars not set'); const { jar, csrfToken } = await login(HR_EMAIL, HR_PASS); session = { jar, csrfToken }; }
+    const contests = (await db.listContests()).filter((c) => c.slug);
+    let ok = 0; const errs = [];
+    for (const c of contests) { try { await scrapeAndSave(session, c); ok++; } catch (e) { errs.push(`${c.slug}: ${e.message}`); } }
+    autoState.lastRun = new Date().toISOString();
+    autoState.lastResult = `${ok}/${contests.length} contests synced${errs.length ? ' · ' + errs.length + ' failed' : ''}`;
+    console.log('[auto-sync]', autoState.lastResult);
+  } catch (e) {
+    autoState.lastRun = new Date().toISOString();
+    autoState.lastResult = 'failed: ' + e.message;
+    console.warn('[auto-sync] failed:', e.message);
+  } finally { autoState.running = false; }
+}
+app.get('/api/auto-sync/status', requireAdmin, (_req, res) => res.json({ enabled: AUTO_SYNC, times: AUTO_TIMES, lastRun: autoState.lastRun, lastResult: autoState.lastResult, running: autoState.running }));
+app.post('/api/auto-sync/run', requireAdmin, (_req, res) => { autoSyncAll(); res.json({ ok: true }); });
+
+if (AUTO_SYNC) {
+  let lastSlot = '';
+  setInterval(() => {
+    const d = new Date();
+    const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const slot = d.toDateString() + ' ' + hhmm;
+    if (AUTO_TIMES.includes(hhmm) && lastSlot !== slot) { lastSlot = slot; autoSyncAll(); }
+  }, 30 * 1000).unref?.();
+}
+
+app.get('/api/health', (_req, res) => res.json({ ok: true, mock: MOCK, storage: db.storageBackend() }));
+
+app.listen(PORT, () => {
+  console.log(`HackerRank Admin Dashboard → http://localhost:${PORT}${MOCK ? '  [MOCK]' : ''}`);
+  console.log(`Admin login: ${ADMIN_USER} / ${ADMIN_PASS}${ADMIN_USER === 'admin' && ADMIN_PASS === 'admin' ? '  (set ADMIN_USER/ADMIN_PASS env to change)' : ''}`);
+  console.log(`Storage: ${db.storageBackend()}`);
+  console.log(`Auto-sync: ${AUTO_SYNC ? 'ON at ' + AUTO_TIMES.join(', ') + (MOCK || (HR_EMAIL && HR_PASS) ? '' : ' (⚠ set HR_EMAIL/HR_PASS)') : 'off (set AUTO_SYNC=1)'}`);
+});

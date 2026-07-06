@@ -1,0 +1,14 @@
+{
+  "name": "hackerrank-admin-dashboard",
+  "version": "1.0.0",
+  "description": "Admin dashboard that tracks students' HackerRank contest progress per college, with student access codes and roster management.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file=.env server.js",
+    "dev": "node --watch --env-file=.env server.js",
+    "mock": "MOCK=1 node --env-file=.env server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": { "express": "^4.19.2", "pg": "^8.12.0" }
+}
