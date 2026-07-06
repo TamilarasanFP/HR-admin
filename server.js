@@ -231,7 +231,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     // Leaderboard is fetched only for ranks + a reference hacker (best-effort).
     send('progress', { phase: 'leaderboard', completed: 0, total: 0 });
     let leaderboard = [];
-    try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max: SCRAPE_CAP, onPage: (c) => send('progress', { phase: 'leaderboard', completed: c, total: 0 }) }); }
+    try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, onPage: (c) => send('progress', { phase: 'leaderboard', completed: c, total: 0 }) }); } // no cap — full leaderboard for ranks
     catch (e) { send('progress', { phase: 'leaderboard', completed: 0, total: 0, note: 'leaderboard unavailable: ' + e.message }); }
     const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
 
@@ -441,7 +441,7 @@ async function scrapeAndSave(session, contest) {
   if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); return { slug, users: dash.summary.totalUsers }; }
   const { jar, csrfToken } = session;
   let leaderboard = [];
-  try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max: SCRAPE_CAP }); } catch { /* ranks are optional */ }
+  try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug }); } catch { /* ranks are optional; full leaderboard */ }
   const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
   const { targets } = await resolveScrapeTargets(contest, leaderboard);
   if (!targets.length) throw new Error('no students mapped and no leaderboard entries');
