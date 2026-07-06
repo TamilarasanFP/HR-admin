@@ -205,11 +205,20 @@ $('up-file').addEventListener('change', async (e) => {
     const contestId = $('up-contest').value;
     const res = await api('/api/students/upload', { method: 'POST', body: { college, students, contestId: contestId || undefined } });
     const ctName = contestId ? ($('up-contest').options[$('up-contest').selectedIndex]?.textContent) : '';
-    const warn = col.name === -1 ? ' ⚠ No NAME column detected — names will show as usernames. Check your header row.' : '';
-    setStatus($('up-status'), `Uploaded ${res.count} students to ${college}${contestId ? ` and mapped ${res.assigned} to "${ctName}"` : ''}.${warn}`, col.name === -1 ? 'err' : 'ok');
+    const nameWarn = col.name === -1 ? ' ⚠ No NAME column detected — names will show as usernames. Check your header row.' : '';
+    const hasIssues = (res.warnings && res.warnings.length) || col.name === -1;
+    setStatus($('up-status'), `Saved ${res.count} of ${res.received ?? students.length} rows to ${college}${contestId ? ` and mapped ${res.assigned} to "${ctName}"` : ''}.${nameWarn}`, hasIssues ? 'err' : 'ok');
+    // Build a details panel including skipped/duplicate warnings.
+    let issuesHtml = '';
+    if (res.warnings && res.warnings.length) {
+      issuesHtml += `<div style="margin-top:6px;color:#c0392b"><b>⚠ ${res.warnings.length === 1 ? 'Notice' : 'Notices'}:</b><ul style="margin:4px 0 0 18px">` +
+        res.warnings.map((w) => `<li>${esc(w)}</li>`).join('') + `</ul></div>`;
+      const sample = (res.skipped || []).slice(0, 8).map((x) => `${esc(x.name || '(no name)')} → <code>${esc(x.username || '')}</code> (${esc(x.reason)})`).join('; ');
+      if (sample) issuesHtml += `<div style="margin-top:4px;font-size:12px;color:#888">Examples: ${sample}${(res.skipped || []).length > 8 ? ' …' : ''}</div>`;
+    }
     $('up-detected').innerHTML =
       `<div>Detected → <b>name:</b> ${lbl(h, col.name)} · <b>user:</b> ${lbl(h, col.user)} · <b>reg:</b> ${lbl(h, col.reg)} · <b>email:</b> ${lbl(h, col.email)} · <b>dept:</b> ${lbl(h, col.dept)} · <b>section:</b> ${lbl(h, col.section)} · <b>year:</b> ${lbl(h, col.year)}</div>` +
-      `<div style="margin-top:4px">Your sheet's headers: ${h.map((x) => `<code>${esc(String(x))}</code>`).join(', ')}</div>`;
+      `<div style="margin-top:4px">Your sheet's headers: ${h.map((x) => `<code>${esc(String(x))}</code>`).join(', ')}</div>` + issuesHtml;
     await loadColleges();
   } catch (err) { setStatus($('up-status'), err.message, 'err'); }
   finally { e.target.value = ''; }

@@ -112,14 +112,43 @@ app.get('/api/students', requireAdmin, async (req, res) => {
     res.json({ students: await db.listStudents({ college, department, section, year }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// Placeholder usernames that are not real HackerRank accounts.
+const PLACEHOLDER_USERNAMES = new Set(['sample', 'absent', 'na', 'n/a', 'nil', 'none', 'null', 'test', 'xxx', '-', '--', '.']);
 app.post('/api/students/upload', requireAdmin, async (req, res) => {
   try {
     const { college, students, contestId } = req.body || {};
     if (!college || !Array.isArray(students)) return res.status(400).json({ error: 'Expected { college, students: [...] }.' });
-    const r = await db.upsertStudents(college, students);
+
+    const warnings = [];
+    const skipped = [];          // rows dropped: no/placeholder username
+    const seen = new Map();      // username_key -> first student name (dup detection)
+    const duplicates = [];       // rows collapsed because username repeats
+    const clean = [];
+
+    students.forEach((s, i) => {
+      const rowNo = i + 2; // +1 header, +1 to 1-index
+      const raw = String(s.hrUsername || '').trim();
+      const key = raw.toLowerCase();
+      const label = s.name ? `"${s.name}"` : `row ${rowNo}`;
+      if (!raw) { skipped.push({ row: rowNo, name: s.name || '', username: raw, reason: 'missing username' }); return; }
+      if (PLACEHOLDER_USERNAMES.has(key)) { skipped.push({ row: rowNo, name: s.name || '', username: raw, reason: 'placeholder username' }); return; }
+      if (seen.has(key)) { duplicates.push({ row: rowNo, name: s.name || '', username: raw, firstSeen: seen.get(key) }); }
+      else seen.set(key, s.name || label);
+      clean.push(s);
+    });
+
+    if (skipped.length) {
+      const byReason = skipped.reduce((m, x) => ((m[x.reason] = (m[x.reason] || 0) + 1), m), {});
+      warnings.push(`Skipped ${skipped.length} row(s): ` + Object.entries(byReason).map(([k, v]) => `${v} with ${k}`).join(', ') + '.');
+    }
+    if (duplicates.length) {
+      warnings.push(`${duplicates.length} row(s) had a HackerRank username already used by another student in this file — only the last of each was kept.`);
+    }
+
+    const r = await db.upsertStudents(college, clean);
     let assigned = 0;
-    if (contestId) assigned = await db.assignStudentsToContest(contestId, students.map((s) => String(s.hrUsername || '').toLowerCase()).filter(Boolean));
-    res.json({ ok: true, ...r, assigned });
+    if (contestId) assigned = await db.assignStudentsToContest(contestId, clean.map((s) => String(s.hrUsername || '').toLowerCase()).filter(Boolean));
+    res.json({ ok: true, ...r, assigned, received: students.length, skipped, duplicates, warnings });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.delete('/api/students', requireAdmin, async (req, res) => {
@@ -139,6 +168,23 @@ app.post('/api/hr/connect', requireAdmin, async (req, res) => {
     res.json({ ok: true, hrToken: t });
   } catch (e) { res.status(401).json({ error: e.message }); }
 });
+
+const SCRAPE_CAP = 2000; // max users compared per scrape
+
+// Resolve which usernames to scrape for a contest: the mapped roster (capped),
+// falling back to the leaderboard usernames if no students are mapped.
+async function resolveScrapeTargets(contest, leaderboard) {
+  const roster = await db.listStudentsForContest(contest.id);
+  let targets = roster.map((s) => String(s.hrUsername || '').trim()).filter(Boolean);
+  // dedupe case-insensitively, preserve first spelling
+  const seen = new Set(); const deduped = [];
+  for (const u of targets) { const k = u.toLowerCase(); if (!seen.has(k)) { seen.add(k); deduped.push(u); } }
+  targets = deduped;
+  let source = 'roster';
+  if (!targets.length) { targets = (leaderboard || []).map((l) => l.username).filter(Boolean); source = 'leaderboard'; }
+  const capped = targets.length > SCRAPE_CAP;
+  return { targets: targets.slice(0, SCRAPE_CAP), source, capped, rosterCount: roster.length };
+}
 
 function assembleDashboard({ slug, contest, leaderboard, questions, userMap, reference }) {
   const users = leaderboard.map((entry) => {
@@ -173,7 +219,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     if (!session) { send('failed', { error: 'Connect your HackerRank account first.' }); return res.end(); }
     const ct = await db.getContest(contestId);
     if (!ct || !ct.slug) { send('failed', { error: 'Contest has no link.' }); return res.end(); }
-    const slug = ct.slug; const max = 1000;
+    const slug = ct.slug;
 
     if (MOCK || session.mock) {
       const dash = buildMockDashboard(slug, 60); const total = dash.summary.totalUsers;
@@ -182,15 +228,25 @@ app.get('/api/scrape-stream', async (req, res) => {
       return res.end();
     }
     const { jar, csrfToken } = session;
+    // Leaderboard is fetched only for ranks + a reference hacker (best-effort).
     send('progress', { phase: 'leaderboard', completed: 0, total: 0 });
-    const leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max, onPage: (c) => send('progress', { phase: 'leaderboard', completed: c, total: 0 }) });
-    if (!leaderboard.length) { send('failed', { error: 'No leaderboard entries (check link / access).' }); return res.end(); }
-    const usernames = leaderboard.map((l) => l.username).filter(Boolean);
-    const { reference, contest, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: usernames, reference: usernames[0], concurrency: 8, onProgress: (c, t) => { if (!aborted) send('progress', { phase: 'comparing', completed: c, total: t }); } });
+    let leaderboard = [];
+    try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max: SCRAPE_CAP, onPage: (c) => send('progress', { phase: 'leaderboard', completed: c, total: 0 }) }); }
+    catch (e) { send('progress', { phase: 'leaderboard', completed: 0, total: 0, note: 'leaderboard unavailable: ' + e.message }); }
+    const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
+
+    const { targets, source, capped, rosterCount } = await resolveScrapeTargets(ct, leaderboard);
+    if (!targets.length) { send('failed', { error: 'No students mapped to this contest and no leaderboard entries. Upload a roster and map it to this contest.' }); return res.end(); }
+    send('progress', { phase: 'comparing', completed: 0, total: targets.length, source, capped, rosterCount });
+
+    const reference = (leaderboard[0] && leaderboard[0].username) || targets[0];
+    const { contest, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8, onProgress: (c, t) => { if (!aborted) send('progress', { phase: 'comparing', completed: c, total: t }); } });
     if (aborted) return res.end();
-    const dash = assembleDashboard({ slug, contest, leaderboard, questions, userMap, reference });
+    // Build the user rows from the target list (roster), pulling rank from the leaderboard when present.
+    const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
+    const dash = assembleDashboard({ slug, contest, leaderboard: entries, questions, userMap, reference });
     const saved = await db.saveScrape(slug, dash);
-    send('done', { ...saved, summary: dash.summary, contest: dash.contest });
+    send('done', { ...saved, summary: dash.summary, contest: dash.contest, source, capped });
     res.end();
   } catch (e) { send('failed', { error: e.message }); res.end(); }
 });
@@ -204,8 +260,13 @@ app.get('/api/contest-dashboard/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
     if (!contest) return res.status(404).json({ error: 'Contest not found.' });
-    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
-    res.json({ contest, college: contest.college, dashboard: dash, topics: contest.slug ? await db.getTopics(contest.slug) : {}, categories: contest.slug ? await db.getQuestionCategories(contest.slug) : {}, students: await db.listStudentsForContest(contest.id) });
+    const [dash, topics, categories, students] = await Promise.all([
+      contest.slug ? db.getLatestScrape(contest.slug) : null,
+      contest.slug ? db.getTopics(contest.slug) : {},
+      contest.slug ? db.getQuestionCategories(contest.slug) : {},
+      db.listStudentsForContest(contest.id),
+    ]);
+    res.json({ contest, college: contest.college, dashboard: dash, topics, categories, students });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -279,11 +340,13 @@ app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
  try {
   const contest = await db.getContest(req.params.contestId);
   if (!contest) return res.status(404).json({ error: 'Contest not found.' });
-  const series = contest.slug ? await db.getScrapeSeries(contest.slug) : [];
+  const [series, roster] = await Promise.all([
+    contest.slug ? db.getScrapeSeries(contest.slug) : [],
+    db.listStudentsForContest(contest.id),
+  ]);
   const N = Math.min(Math.max(parseInt(req.query.days, 10) || 10, 1), 60); // last N days (default 10)
   const startIdx = Math.max(0, series.length - N);
   const days = series.map((s) => s.day).slice(startIdx);
-  const roster = await db.listStudentsForContest(contest.id);
   const students = roster.map((s) => {
     const key = (s.usernameKey || s.hrUsername || '').toLowerCase();
     let prev = 0; const daily = [];
@@ -357,11 +420,15 @@ app.get('/api/shared/:token', async (req, res) => {
   try {
     const contest = await db.getContestByShareToken(req.params.token);
     if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
-    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
-    const topics = contest.slug ? await db.getTopics(contest.slug) : {};
-    const roster = (await db.listStudentsForContest(contest.id))
-      .map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
-    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos: contest.slug ? await db.getTopicVideos(contest.slug) : {}, categories: contest.slug ? await db.getQuestionCategories(contest.slug) : {} });
+    const [dash, topics, rosterRaw, topicVideos, categories] = await Promise.all([
+      contest.slug ? db.getLatestScrape(contest.slug) : null,
+      contest.slug ? db.getTopics(contest.slug) : {},
+      db.listStudentsForContest(contest.id),
+      contest.slug ? db.getTopicVideos(contest.slug) : {},
+      contest.slug ? db.getQuestionCategories(contest.slug) : {},
+    ]);
+    const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
+    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
@@ -373,11 +440,15 @@ async function scrapeAndSave(session, contest) {
   const slug = contest.slug;
   if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); return { slug, users: dash.summary.totalUsers }; }
   const { jar, csrfToken } = session;
-  const leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max: 1000 });
-  if (!leaderboard.length) throw new Error('no leaderboard entries');
-  const usernames = leaderboard.map((l) => l.username).filter(Boolean);
-  const { reference, contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: usernames, reference: usernames[0], concurrency: 8 });
-  const dash = assembleDashboard({ slug, contest: c, leaderboard, questions, userMap, reference });
+  let leaderboard = [];
+  try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, max: SCRAPE_CAP }); } catch { /* ranks are optional */ }
+  const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
+  const { targets } = await resolveScrapeTargets(contest, leaderboard);
+  if (!targets.length) throw new Error('no students mapped and no leaderboard entries');
+  const reference = (leaderboard[0] && leaderboard[0].username) || targets[0];
+  const { contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8 });
+  const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
+  const dash = assembleDashboard({ slug, contest: c, leaderboard: entries, questions, userMap, reference });
   await db.saveScrape(slug, dash);
   return { slug, users: dash.summary.totalUsers };
 }
