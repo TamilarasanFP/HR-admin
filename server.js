@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { login, parseContestSlug, fetchAllLeaderboard, buildMatrix } from './lib/hackerrank.js';
@@ -18,7 +19,47 @@ const AUTO_SYNC = process.env.AUTO_SYNC === '1';
 const AUTO_TIMES = (process.env.AUTO_SYNC_TIMES || '06:00,18:00').split(',').map((s) => s.trim()).filter(Boolean);
 
 app.use(express.json({ limit: '12mb' }));
+
+// Gzip JSON API responses. The scrape payloads are multi-MB; gzip cuts them
+// ~10x over the wire. SSE is excluded so live progress isn't buffered.
+app.use((req, res, next) => {
+  if (req.path === '/api/scrape-stream' || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return next();
+  const _json = res.json.bind(res);
+  res.json = (body) => {
+    let buf; try { buf = Buffer.from(JSON.stringify(body)); } catch { return _json(body); }
+    if (buf.length < 1024) { res.setHeader('Content-Type', 'application/json; charset=utf-8'); return res.send(buf); }
+    zlib.gzip(buf, (err, zipped) => {
+      if (err) { res.setHeader('Content-Type', 'application/json; charset=utf-8'); return res.send(buf); }
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      res.removeHeader('Content-Length');
+      res.end(zipped);
+    });
+    return res;
+  };
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
+
+// In-memory cache for the heavy scrape reads (latest snapshot + daily series),
+// keyed by slug. Invalidated whenever a new scrape is saved. This avoids
+// re-pulling multi-MB payloads from Supabase on every page load.
+const scrapeCache = new Map();
+async function cachedLatestScrape(slug) {
+  if (!slug) return null;
+  const k = 'latest:' + slug;
+  if (scrapeCache.has(k)) return scrapeCache.get(k);
+  const v = await db.getLatestScrape(slug); scrapeCache.set(k, v); return v;
+}
+async function cachedScrapeSeries(slug) {
+  if (!slug) return [];
+  const k = 'series:' + slug;
+  if (scrapeCache.has(k)) return scrapeCache.get(k);
+  const v = await db.getScrapeSeries(slug); scrapeCache.set(k, v); return v;
+}
+function invalidateScrapeCache(slug) { scrapeCache.delete('latest:' + slug); scrapeCache.delete('series:' + slug); }
 
 // ---------------- Admin auth (token-based) ----------------
 const adminTokens = new Set();
@@ -224,7 +265,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     if (MOCK || session.mock) {
       const dash = buildMockDashboard(slug, 60); const total = dash.summary.totalUsers;
       for (let i = 1; i <= total && !aborted; i++) { send('progress', { phase: 'comparing', completed: i, total }); await sleep(15); }
-      if (!aborted) { const saved = await db.saveScrape(slug, dash); send('done', { ...saved, summary: dash.summary, contest: dash.contest }); }
+      if (!aborted) { const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug); send('done', { ...saved, summary: dash.summary, contest: dash.contest }); }
       return res.end();
     }
     const { jar, csrfToken } = session;
@@ -245,7 +286,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     // Build the user rows from the target list (roster), pulling rank from the leaderboard when present.
     const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
     const dash = assembleDashboard({ slug, contest, leaderboard: entries, questions, userMap, reference });
-    const saved = await db.saveScrape(slug, dash);
+    const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug);
     send('done', { ...saved, summary: dash.summary, contest: dash.contest, source, capped });
     res.end();
   } catch (e) { send('failed', { error: e.message }); res.end(); }
@@ -261,7 +302,7 @@ app.get('/api/contest-dashboard/:contestId', requireAdmin, async (req, res) => {
     const contest = await db.getContest(req.params.contestId);
     if (!contest) return res.status(404).json({ error: 'Contest not found.' });
     const [dash, topics, categories, students] = await Promise.all([
-      contest.slug ? db.getLatestScrape(contest.slug) : null,
+      contest.slug ? cachedLatestScrape(contest.slug) : null,
       contest.slug ? db.getTopics(contest.slug) : {},
       contest.slug ? db.getQuestionCategories(contest.slug) : {},
       db.listStudentsForContest(contest.id),
@@ -275,7 +316,7 @@ app.get('/api/topics/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
     if (!contest) return res.status(404).json({ error: 'Contest not found.' });
-    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
     const saved = contest.slug ? await db.getTopics(contest.slug) : {};
     const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
     const questions = dash ? dash.questions.map((q) => ({ name: q.name, topic: saved[q.name] || '', suggested: titleTag(q.name), category: cats[q.name] || '' })) : [];
@@ -302,7 +343,7 @@ app.get('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
     if (!contest) return res.status(404).json({ error: 'Contest not found.' });
-    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
     const videos = contest.slug ? await db.getTopicVideos(contest.slug) : {};
     const topics = (await distinctTopics(contest.slug, dash)).map((t) => ({ name: t, videos: videos[t] || [] }));
     res.json({ contest, hasScrape: !!dash, topics });
@@ -321,7 +362,7 @@ app.get('/api/question-categories/:contestId', requireAdmin, async (req, res) =>
   try {
     const contest = await db.getContest(req.params.contestId);
     if (!contest) return res.status(404).json({ error: 'Contest not found.' });
-    const dash = contest.slug ? await db.getLatestScrape(contest.slug) : null;
+    const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
     const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
     const questions = dash ? dash.questions.map((q) => ({ name: q.name, category: cats[q.name] || '' })) : [];
     res.json({ contest, hasScrape: !!dash, questions });
@@ -335,16 +376,13 @@ app.post('/api/question-categories/:contestId', requireAdmin, async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Per-student daily questions-completed (derived from daily snapshots).
-app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
- try {
-  const contest = await db.getContest(req.params.contestId);
-  if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+// Build per-student daily questions-completed from stored snapshots. Shared by
+// the admin Daily tab and the read-only shared view.
+async function computeDaily(contest, N = 10) {
   const [series, roster] = await Promise.all([
-    contest.slug ? db.getScrapeSeries(contest.slug) : [],
+    contest.slug ? cachedScrapeSeries(contest.slug) : [],
     db.listStudentsForContest(contest.id),
   ]);
-  const N = Math.min(Math.max(parseInt(req.query.days, 10) || 10, 1), 60); // last N days (default 10)
   const startIdx = Math.max(0, series.length - N);
   const days = series.map((s) => s.day).slice(startIdx);
   const students = roster.map((s) => {
@@ -357,6 +395,16 @@ app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
     }
     return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, daily: daily.slice(startIdx), total: prev };
   }).sort((a, b) => b.total - a.total);
+  return { days, students };
+}
+
+// Per-student daily questions-completed (derived from daily snapshots).
+app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
+ try {
+  const contest = await db.getContest(req.params.contestId);
+  if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+  const N = Math.min(Math.max(parseInt(req.query.days, 10) || 10, 1), 60); // last N days (default 10)
+  const { days, students } = await computeDaily(contest, N);
   res.json({ contest: { name: contest.name }, days, students });
  } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -390,7 +438,7 @@ app.post('/api/student/practice', async (req, res) => {
   const contests = await db.listContests(c.name);
   const ct = contests.find((x) => String(x.id) === String(contestId)) || contests[0];
   const slug = ct?.slug || c.slug;
-  const dash = slug ? await db.getLatestScrape(slug) : null;
+  const dash = slug ? await cachedLatestScrape(slug) : null;
   let contest = null, questions = [], stats = null, topicVideos = {};
   if (dash) {
     contest = { name: (ct && ct.name) || dash.contest.name };
@@ -421,14 +469,15 @@ app.get('/api/shared/:token', async (req, res) => {
     const contest = await db.getContestByShareToken(req.params.token);
     if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
     const [dash, topics, rosterRaw, topicVideos, categories] = await Promise.all([
-      contest.slug ? db.getLatestScrape(contest.slug) : null,
+      contest.slug ? cachedLatestScrape(contest.slug) : null,
       contest.slug ? db.getTopics(contest.slug) : {},
       db.listStudentsForContest(contest.id),
       contest.slug ? db.getTopicVideos(contest.slug) : {},
       contest.slug ? db.getQuestionCategories(contest.slug) : {},
     ]);
     const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
-    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories });
+    const daily = await computeDaily(contest, 30); // last 30 days for the shared Daily tab
+    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
@@ -438,7 +487,7 @@ app.get('/student', (_req, res) => res.sendFile(path.join(__dirname, 'public', '
 const autoState = { lastRun: null, lastResult: null, running: false };
 async function scrapeAndSave(session, contest) {
   const slug = contest.slug;
-  if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); return { slug, users: dash.summary.totalUsers }; }
+  if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); invalidateScrapeCache(slug); return { slug, users: dash.summary.totalUsers }; }
   const { jar, csrfToken } = session;
   let leaderboard = [];
   try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug }); } catch { /* ranks are optional; full leaderboard */ }
@@ -449,7 +498,7 @@ async function scrapeAndSave(session, contest) {
   const { contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8 });
   const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
   const dash = assembleDashboard({ slug, contest: c, leaderboard: entries, questions, userMap, reference });
-  await db.saveScrape(slug, dash);
+  await db.saveScrape(slug, dash); invalidateScrapeCache(slug);
   return { slug, users: dash.summary.totalUsers };
 }
 async function autoSyncAll() {

@@ -18,6 +18,12 @@
     <div id="view-status" class="status" style="margin-bottom:12px"></div>
     <h2 id="view-title" style="margin:6px 0"></h2>
 
+    <nav class="tabs" id="view-tabs" style="margin:10px 0 18px;border-bottom:1px solid var(--border)">
+      <button class="tab active" data-vtab="dashboard">Dashboard</button>
+      <button class="tab" data-vtab="daily">Daily question completion</button>
+    </nav>
+
+    <div id="tab-dashboard">
     <div id="summary" class="summary-grid hidden"></div>
 
     <div id="topic-analysis-card" class="card hidden">
@@ -57,6 +63,15 @@
       </div>
       <div class="table-scroll"><table id="students-table" class="data-table"></table></div>
       <div id="students-pager" class="pager"></div>
+    </div>
+    </div><!-- /tab-dashboard -->
+
+    <div id="tab-daily" class="hidden">
+      <div class="card">
+        <div class="card-head"><h3>Daily questions completed <span class="muted" id="daily-note"></span></h3></div>
+        <p class="muted">Questions each student completed per day (from daily snapshots). The first day shown is a baseline, not a same-day count.</p>
+        <div class="table-scroll"><table id="daily-table" class="data-table"></table></div>
+      </div>
     </div>
   </main>
 

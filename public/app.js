@@ -315,8 +315,13 @@ async function loadDashboard() {
   solvedFilter = null;
   studentsPage = 1;
   showContestLink();
-  roster = selectedCollegeId ? (await api('/api/students?college=' + encodeURIComponent(collegeName(selectedCollegeId)))).students || [] : [];
-  if (!selectedContestId) { dashData = null; dashTopics = {}; fillFilters(); renderSummary(); renderTopicAnalysis(); renderStudents(); setStatus($('dash-status'), 'No contest yet — add one with ＋ Contest.', 'info'); return; }
+  if (!selectedContestId) {
+    // Only when there's no contest do we need the whole-college roster.
+    roster = selectedCollegeId ? (await api('/api/students?college=' + encodeURIComponent(collegeName(selectedCollegeId)))).students || [] : [];
+    dashData = null; dashTopics = {}; fillFilters(); renderSummary(); renderTopicAnalysis(); renderStudents();
+    setStatus($('dash-status'), 'No contest yet — add one with ＋ Contest.', 'info'); return;
+  }
+  // The contest-dashboard call already returns this contest's students, so skip the redundant roster fetch.
   const d = await api('/api/contest-dashboard/' + selectedContestId);
   dashData = d.dashboard;
   dashTopics = d.topics || {};

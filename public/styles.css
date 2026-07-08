@@ -46,7 +46,7 @@ button.ghost.danger{background:transparent;color:var(--danger);border-color:rgba
 .data-table th,.data-table td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
 .data-table thead th{position:sticky;top:0;background:var(--surface2);z-index:2}
 .data-table tbody tr:hover{background:rgba(255,255,255,.03)}
-.data-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.data-table td.num,.data-table th.num{text-align:right;font-variant-numeric:tabular-nums}
 .data-table td.sticky-name,.data-table th.sticky-name{position:sticky;left:0;background:var(--surface);z-index:1}
 .data-table thead th.sticky-name{z-index:3;background:var(--surface2)}
 .bar{height:6px;background:var(--surface2);border-radius:4px;overflow:hidden;min-width:70px}

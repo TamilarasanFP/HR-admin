@@ -6,7 +6,7 @@ const heatColor = (p) => `hsl(${Math.round((p / 100) * 120)},70%,${p === 0 ? 30 
 function questionUrl(q) { const u = q.url; if (!u || u === '#') return null; return u.startsWith('http') ? u : 'https://www.hackerrank.com' + (u.startsWith('/') ? u : '/' + u); }
 function splitTitle(name) { const m = String(name).split(/\s+[–—-]\s+/); return m.length >= 2 ? { tag: m[0].trim(), title: m.slice(1).join(' - ').trim() } : { tag: '', title: String(name) }; }
 
-let dashData = null, dashTopics = {}, dashCats = {}, roster = [];
+let dashData = null, dashTopics = {}, dashCats = {}, roster = [], dailyData = null;
 let studentsPage = 1; const STUDENTS_PAGE = 50;
 let taRows = [];
 let compDist = [], compTotal = 0, compTotalQ = 0, compMax = 1, compPage = 1; const COMP_PAGE = 20;
@@ -17,11 +17,11 @@ async function boot() {
     const res = await fetch('/api/shared/' + token);
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || 'Not found');
-    dashData = d.dashboard; dashTopics = d.topics || {}; dashCats = d.categories || {}; roster = d.roster || [];
+    dashData = d.dashboard; dashTopics = d.topics || {}; dashCats = d.categories || {}; roster = d.roster || []; dailyData = d.daily || null;
     $('view-title').textContent = `${d.contest.name} — ${d.college}`;
     document.title = `${d.contest.name} · ${d.college}`;
     if (!dashData) { $('view-status').textContent = 'This contest has not been synced yet.'; $('view-status').className = 'status info'; return; }
-    fillFilters(); renderSummary(); renderTopicAnalysis(); renderCompletion(); renderCategoryChart(); renderStudents();
+    fillFilters(); renderSummary(); renderTopicAnalysis(); renderCompletion(); renderCategoryChart(); renderStudents(); renderDaily();
   } catch (e) { $('view-status').textContent = e.message; $('view-status').className = 'status err'; }
 }
 
@@ -240,6 +240,32 @@ function openPerf(hrUsername) {
   $('perf-table').innerHTML = `<thead><tr><th>#</th><th>Question</th><th>Status</th><th class="num">Score</th></tr></thead><tbody>` +
     qrows.map(({ q, st }, i) => { const cls = st.solved ? 'solved' : st.attempted ? 'attempted' : 'none'; const txt = st.solved ? 'Solved' : st.attempted ? 'Attempted' : 'Not attempted'; const url = questionUrl(q); const name = url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(q.name)}</a>` : esc(q.name); return `<tr><td class="num">${i + 1}</td><td>${name}</td><td><span class="badge ${cls}">${txt}</span></td><td class="num">${st.score || 0} / ${q.points}</td></tr>`; }).join('') + `</tbody>`;
   $('perf-modal').classList.remove('hidden');
+}
+
+// ---- Tabs (Dashboard / Daily) ----
+document.querySelectorAll('#view-tabs .tab').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('#view-tabs .tab').forEach((x) => x.classList.remove('active'));
+  b.classList.add('active');
+  const t = b.dataset.vtab;
+  $('tab-dashboard').classList.toggle('hidden', t !== 'dashboard');
+  $('tab-daily').classList.toggle('hidden', t !== 'daily');
+}));
+
+// ---- Daily questions completed ----
+function fmtDay(iso) { const d = new Date(iso + 'T00:00:00'); return isNaN(d) ? iso : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
+function renderDaily() {
+  const t = $('daily-table');
+  if (!dailyData || !dailyData.days || !dailyData.days.length) {
+    t.innerHTML = `<tbody><tr><td class="muted">No daily snapshots yet — this contest needs to be synced on at least one day to build history.</td></tr></tbody>`;
+    $('daily-note').textContent = '';
+    return;
+  }
+  const { days, students } = dailyData;
+  $('daily-note').textContent = `· ${students.length} students · ${days.length} day(s)`;
+  t.innerHTML =
+    `<thead><tr><th class="sticky-name">Student</th>${days.map((day) => `<th class="num">${esc(fmtDay(day))}</th>`).join('')}<th class="num">Total</th></tr></thead><tbody>` +
+    students.map((s) => `<tr><td class="sticky-name">${esc(s.name || s.hrUsername)}</td>${s.daily.map((n) => `<td class="num">${n ? n : '<span class="muted">·</span>'}</td>`).join('')}<td class="num">${s.total}</td></tr>`).join('') +
+    `</tbody>`;
 }
 
 boot();
