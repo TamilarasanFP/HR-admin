@@ -1,18 +1,14 @@
 {
-  "name": "attendance-tracker",
+  "name": "hackerrank-admin-dashboard",
   "version": "1.0.0",
-  "description": "Employee attendance tracker with live in-browser camera capture; timestamp is stamped on the photo and recorded at capture.",
+  "description": "Admin dashboard that tracks students' HackerRank contest progress per college, with student access codes and roster management.",
+  "type": "module",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
-    "start": "node server.js",
-    "checkdb": "node checkdb.js",
-    "test": "node selftest.js"
+    "start": "node --env-file=.env server.js",
+    "dev": "node --watch --env-file=.env server.js",
+    "mock": "MOCK=1 node --env-file=.env server.js"
   },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.45.0",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "multer": "^1.4.5-lts.1"
-  }
+  "engines": { "node": ">=18" },
+  "dependencies": { "express": "^4.19.2", "pg": "^8.12.0" }
 }

@@ -1,312 +1,543 @@
-'use strict';
+import express from 'express';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { login, parseContestSlug, fetchAllLeaderboard, buildMatrix } from './lib/hackerrank.js';
+import { buildMockDashboard } from './lib/mock.js';
+import * as db from './lib/db.js';
 
-require('dotenv').config();
-
-const express = require('express');
-const multer = require('multer');
-const path = require('path');
-const crypto = require('crypto');
-const db = require('./db');
-
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
+const MOCK = process.env.MOCK === '1';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
+const HR_EMAIL = process.env.HR_EMAIL || '';
+const HR_PASS = process.env.HR_PASS || '';
+const AUTO_SYNC = process.env.AUTO_SYNC === '1';
+const AUTO_TIMES = (process.env.AUTO_SYNC_TIMES || '06:00,18:00').split(',').map((s) => s.trim()).filter(Boolean);
 
-if (!db.isConfigured()) {
-  console.warn('\n[WARN] Supabase is NOT configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY ' +
-    'in a .env file — data operations will fail until you do.\n');
-}
+app.use(express.json({ limit: '12mb' }));
 
-// ---- admin auth config ----
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-if (ADMIN_PASSWORD === 'admin123') {
-  console.warn('[WARN] Using the DEFAULT admin password "admin123". ' +
-    'Set ADMIN_PASSWORD before real use.\n');
-}
-const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const sessions = new Map();
-
-function newSession() {
-  const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, Date.now() + SESSION_TTL_MS);
-  return token;
-}
-function validSession(token) {
-  if (!token || !sessions.has(token)) return false;
-  if (Date.now() > sessions.get(token)) { sessions.delete(token); return false; }
-  return true;
-}
-function passwordMatches(given) {
-  const a = Buffer.from(String(given));
-  const b = Buffer.from(ADMIN_PASSWORD);
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-function getCookie(req, name) {
-  const raw = req.headers.cookie || '';
-  for (const part of raw.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(v.join('='));
-  }
-  return null;
-}
-function requireAdmin(req, res, next) {
-  if (validSession(getCookie(req, 'admin_session'))) return next();
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Not authenticated.' });
-  return res.redirect('/admin/login');
-}
-
-// ---- uploads held in memory (then pushed to Supabase Storage) ----
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024 } });
-
-// ---- helpers ----
-// Format an absolute instant into date + time in a fixed timezone (default IST),
-// so the recorded wall-clock is correct no matter where the server runs.
-const DISPLAY_TZ = process.env.DISPLAY_TZ || 'Asia/Kolkata';
-function splitDateTime(d) {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: DISPLAY_TZ, hourCycle: 'h23',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
-  }).formatToParts(d).reduce((o, p) => (o[p.type] = p.value, o), {});
-  return {
-    date: `${parts.year}-${parts.month}-${parts.day}`,
-    time: `${parts.hour}:${parts.minute}:${parts.second}`
+// Gzip JSON API responses. The scrape payloads are multi-MB; gzip cuts them
+// ~10x over the wire. SSE is excluded so live progress isn't buffered.
+app.use((req, res, next) => {
+  if (req.path === '/api/scrape-stream' || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return next();
+  const _json = res.json.bind(res);
+  res.json = (body) => {
+    let buf; try { buf = Buffer.from(JSON.stringify(body)); } catch { return _json(body); }
+    if (buf.length < 1024) { res.setHeader('Content-Type', 'application/json; charset=utf-8'); return res.send(buf); }
+    zlib.gzip(buf, (err, zipped) => {
+      if (err) { res.setHeader('Content-Type', 'application/json; charset=utf-8'); return res.send(buf); }
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      res.removeHeader('Content-Length');
+      res.end(zipped);
+    });
+    return res;
   };
-}
-function workedLabel(start, end) {
-  if (!start || !end) return '';
-  const a = new Date(start.capturedAt).getTime();
-  const b = new Date(end.capturedAt).getTime();
-  if (isNaN(a) || isNaN(b) || b <= a) return '';
-  let mins = Math.round((b - a) / 60000);
-  const h = Math.floor(mins / 60);
-  mins = mins % 60;
-  return h ? `${h}h ${mins}m` : `${mins}m`;
-}
+  next();
+});
 
-app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
-const VIEWS = path.join(__dirname, 'views');
 
-// ---- ADMIN AUTH ----
-app.get('/admin/login', (req, res) => {
-  if (validSession(getCookie(req, 'admin_session'))) return res.redirect('/admin');
-  res.sendFile(path.join(VIEWS, 'login.html'));
-});
+// In-memory cache for the heavy scrape reads (latest snapshot + daily series),
+// keyed by slug. Invalidated whenever a new scrape is saved. This avoids
+// re-pulling multi-MB payloads from Supabase on every page load.
+const scrapeCache = new Map();
+async function cachedLatestScrape(slug) {
+  if (!slug) return null;
+  const k = 'latest:' + slug;
+  if (scrapeCache.has(k)) return scrapeCache.get(k);
+  const v = await db.getLatestScrape(slug); scrapeCache.set(k, v); return v;
+}
+async function cachedScrapeSeries(slug) {
+  if (!slug) return [];
+  const k = 'series:' + slug;
+  if (scrapeCache.has(k)) return scrapeCache.get(k);
+  const v = await db.getScrapeSeries(slug); scrapeCache.set(k, v); return v;
+}
+function invalidateScrapeCache(slug) { scrapeCache.delete('latest:' + slug); scrapeCache.delete('series:' + slug); }
+
+// ---------------- Admin auth (token-based) ----------------
+const adminTokens = new Set();
+const hrSessions = new Map(); // hr login sessions for scraping: token -> {jar,csrfToken}
+
 app.post('/api/admin/login', (req, res) => {
-  if (!passwordMatches(req.body && req.body.password)) return res.status(401).json({ error: 'Incorrect password.' });
-  const token = newSession();
-  res.setHeader('Set-Cookie',
-    `admin_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`);
-  res.json({ ok: true });
+  const { username, password } = req.body || {};
+  if (username === ADMIN_USER && password === ADMIN_PASS) {
+    const token = crypto.randomUUID();
+    adminTokens.add(token);
+    return res.json({ ok: true, token, defaultCreds: ADMIN_USER === 'admin' && ADMIN_PASS === 'admin' });
+  }
+  res.status(401).json({ error: 'Invalid admin username or password.' });
 });
-app.post('/api/admin/logout', (req, res) => {
-  const t = getCookie(req, 'admin_session');
-  if (t) sessions.delete(t);
-  res.setHeader('Set-Cookie', 'admin_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
-  res.json({ ok: true });
-});
-app.get('/admin', requireAdmin, (req, res) => res.sendFile(path.join(VIEWS, 'admin.html')));
+function requireAdmin(req, res, next) {
+  const t = req.get('x-admin-token') || req.query.adminToken;
+  if (t && adminTokens.has(t)) return next();
+  res.status(401).json({ error: 'Admin authentication required.' });
+}
 
-// ---- CHECK-IN (public) ----
-app.post('/api/checkin', upload.single('photo'), async (req, res) => {
+function slugFromUrl(url) { const u = String(url || '').trim(); if (!u) return ''; try { return parseContestSlug(u); } catch { return ''; } }
+
+// ---------------- Colleges ----------------
+app.get('/api/colleges', requireAdmin, async (_req, res) => { try { res.json({ colleges: await db.listColleges() }); } catch (e) { res.status(500).json({ error: e.message }); } });
+app.post('/api/colleges', requireAdmin, async (req, res) => {
   try {
-    let name = (req.body.name || '').trim();
-    const empId = (req.body.empId || '').trim();
-    const type = req.body.type === 'end' ? 'end' : 'start';
-    if (!name || !empId) return res.status(400).json({ error: 'Name and Employee ID are required.' });
-    if (!req.file) return res.status(400).json({ error: 'Capture a photo with the camera before submitting.' });
+    const { name, accessCode, contestUrl } = req.body || {};
+    const c = await db.addCollege({ name, accessCode: accessCode || '', contestUrl: contestUrl || '', slug: slugFromUrl(contestUrl) });
+    res.json({ ok: true, college: c });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put('/api/colleges/:id', requireAdmin, async (req, res) => {
+  try {
+    const { accessCode, contestUrl } = req.body || {};
+    const fields = {};
+    if (accessCode !== undefined) fields.accessCode = accessCode;
+    if (contestUrl !== undefined) { fields.contestUrl = contestUrl; fields.slug = slugFromUrl(contestUrl); }
+    const c = await db.updateCollege(req.params.id, fields);
+    if (!c) return res.status(404).json({ error: 'College not found.' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/colleges/:id', requireAdmin, async (req, res) => { try { res.json({ ok: await db.deleteCollege(req.params.id) }); } catch (e) { res.status(500).json({ error: e.message }); } });
 
-    const rosterEmp = await db.findEmployee(empId);
-    if (rosterEmp) name = rosterEmp.name; // roster name is authoritative
+// ---------------- Contests (many per college) ----------------
+app.get('/api/contests', requireAdmin, async (req, res) => {
+  try {
+    let college;
+    if (req.query.collegeId) { const c = (await db.listColleges()).find((x) => String(x.id) === String(req.query.collegeId)); college = c?.name; }
+    else if (req.query.college) college = String(req.query.college);
+    res.json({ contests: await db.listContests(college) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/contests', requireAdmin, async (req, res) => {
+  try {
+    const { collegeId, name, contestUrl } = req.body || {};
+    const col = (await db.listColleges()).find((x) => String(x.id) === String(collegeId));
+    if (!col) return res.status(400).json({ error: 'College not found.' });
+    const c = await db.addContest({ college: col.name, name, contestUrl: contestUrl || '', slug: slugFromUrl(contestUrl) });
+    res.json({ ok: true, contest: c });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.put('/api/contests/:id', requireAdmin, async (req, res) => {
+  try {
+    const { name, contestUrl } = req.body || {};
+    const fields = {};
+    if (name !== undefined) fields.name = name;
+    if (contestUrl !== undefined) { fields.contestUrl = contestUrl; fields.slug = slugFromUrl(contestUrl); }
+    const c = await db.updateContest(req.params.id, fields);
+    if (!c) return res.status(404).json({ error: 'Contest not found.' });
+    res.json({ ok: true, contest: c });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/contests/:id', requireAdmin, async (req, res) => { try { res.json({ ok: await db.deleteContest(req.params.id) }); } catch (e) { res.status(500).json({ error: e.message }); } });
+// Create (or return existing) a read-only share link for a contest.
+app.post('/api/contests/:id/share', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.id);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    let token = contest.shareToken;
+    if (!token) { token = crypto.randomBytes(9).toString('hex'); await db.setContestShareToken(contest.id, token); }
+    res.json({ ok: true, token });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-    const serverNow = new Date();
-    let captureTime = new Date(req.body.captureTime || '');
-    if (isNaN(captureTime.getTime())) captureTime = serverNow;
-    const skewMin = Math.abs(serverNow - captureTime) / 60000;
-    if (skewMin > 5) {
-      return res.status(422).json({ error: `Device clock is off by ${Math.round(skewMin)} min from the server. Fix the device time and retry.` });
-    }
+// ---------------- Students (roster) ----------------
+app.get('/api/students', requireAdmin, async (req, res) => {
+  try {
+    const { college, department, section, year, contestId } = req.query;
+    if (contestId) return res.json({ students: await db.listStudentsForContest(contestId) });
+    res.json({ students: await db.listStudents({ college, department, section, year }) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Placeholder usernames that are not real HackerRank accounts.
+const PLACEHOLDER_USERNAMES = new Set(['sample', 'absent', 'na', 'n/a', 'nil', 'none', 'null', 'test', 'xxx', '-', '--', '.']);
+app.post('/api/students/upload', requireAdmin, async (req, res) => {
+  try {
+    const { college, students, contestId } = req.body || {};
+    if (!college || !Array.isArray(students)) return res.status(400).json({ error: 'Expected { college, students: [...] }.' });
 
-    const { date, time } = splitDateTime(captureTime);
-    const safeId = empId.replace(/[^A-Za-z0-9._-]/g, '') || 'unknown';
-    const slot = type === 'start' ? 'startoftheday' : 'endoftheday';
-    const id = `${safeId}_${date}_${slot}`;
-    const photoFile = id + '.jpg';
+    const warnings = [];
+    const skipped = [];          // rows dropped: no/placeholder username
+    const seen = new Map();      // username_key -> first student name (dup detection)
+    const duplicates = [];       // rows collapsed because username repeats
+    const clean = [];
 
-    await db.uploadPhoto(photoFile, req.file.buffer);
-    await db.insertRecord({
-      id, name, empId, type, date, time,
-      capturedAt: captureTime.toISOString(), serverTime: serverNow.toISOString(), photo: photoFile
+    students.forEach((s, i) => {
+      const rowNo = i + 2; // +1 header, +1 to 1-index
+      const raw = String(s.hrUsername || '').trim();
+      const key = raw.toLowerCase();
+      const label = s.name ? `"${s.name}"` : `row ${rowNo}`;
+      if (!raw) { skipped.push({ row: rowNo, name: s.name || '', username: raw, reason: 'missing username' }); return; }
+      if (PLACEHOLDER_USERNAMES.has(key)) { skipped.push({ row: rowNo, name: s.name || '', username: raw, reason: 'placeholder username' }); return; }
+      if (seen.has(key)) { duplicates.push({ row: rowNo, name: s.name || '', username: raw, firstSeen: seen.get(key) }); }
+      else seen.set(key, s.name || label);
+      clean.push(s);
     });
 
-    res.json({ ok: true, type, name, empId, date, time });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Processing failed: ' + err.message });
-  }
-});
-
-// ---- PUBLIC: name lookup for check-in auto-fill ----
-app.get('/api/lookup/:empId', async (req, res) => {
-  try {
-    const e = await db.findEmployee(req.params.empId);
-    res.json({ name: e ? e.name : null });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ---- ADMIN: employee roster ----
-app.get('/api/employees', requireAdmin, async (req, res) => {
-  try { res.json(await db.listEmployees()); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-app.post('/api/employees', requireAdmin, async (req, res) => {
-  try {
-    const name = (req.body.name || '').trim();
-    const empId = (req.body.empId || '').trim();
-    if (!name || !empId) return res.status(400).json({ error: 'Name and Employee ID are required.' });
-    if (await db.findEmployee(empId)) {
-      return res.status(409).json({ error: `Employee ID "${empId}" already exists — not added.` });
+    if (skipped.length) {
+      const byReason = skipped.reduce((m, x) => ((m[x.reason] = (m[x.reason] || 0) + 1), m), {});
+      warnings.push(`Skipped ${skipped.length} row(s): ` + Object.entries(byReason).map(([k, v]) => `${v} with ${k}`).join(', ') + '.');
     }
-    await db.upsertEmployee(empId, name);
-    const count = (await db.listEmployees()).length;
-    res.json({ ok: true, count });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-app.post('/api/employees/bulk', requireAdmin, async (req, res) => {
-  try {
-    const text = String(req.body.text || '');
-    const existing = new Set((await db.listEmployees()).map(e => e.empId));
-    const seen = new Set();
-    const rows = [];
-    let added = 0, duplicates = 0, skipped = 0;
-    for (const line of text.split(/\r?\n/)) {
-      const t = line.trim();
-      if (!t) continue;
-      const parts = t.split(/[,\t]/).map(s => s.trim());
-      const empId = parts[0], name = parts[1];
-      if (!empId || !name) { skipped++; continue; }
-      if (/^(emp(loyee)?\s*id|id)$/i.test(empId) || /^name$/i.test(name)) { skipped++; continue; } // header row
-      if (existing.has(empId) || seen.has(empId)) { duplicates++; continue; } // already in roster or repeated in paste
-      seen.add(empId);
-      rows.push({ empId, name });
-      added++;
+    if (duplicates.length) {
+      warnings.push(`${duplicates.length} row(s) had a HackerRank username already used by another student in this file — only the last of each was kept.`);
     }
-    await db.upsertEmployees(rows);
-    const count = (await db.listEmployees()).length;
-    res.json({ ok: true, added, duplicates, skipped, count });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-app.delete('/api/employees', requireAdmin, async (req, res) => {
-  try { await db.clearEmployees(); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-app.delete('/api/employees/:empId', requireAdmin, async (req, res) => {
-  try { await db.deleteEmployee(req.params.empId); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
 
-// ---- ADMIN: attendance for one date, mapped against roster (incl. absentees) ----
-app.get('/api/day/:date', requireAdmin, async (req, res) => {
+    const r = await db.upsertStudents(college, clean);
+    let assigned = 0;
+    if (contestId) assigned = await db.assignStudentsToContest(contestId, clean.map((s) => String(s.hrUsername || '').toLowerCase()).filter(Boolean));
+    res.json({ ok: true, ...r, assigned, received: students.length, skipped, duplicates, warnings });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete('/api/students', requireAdmin, async (req, res) => {
   try {
-    const date = req.params.date;
-    const byEmp = {};
-    for (const r of await db.recordsByDate(date)) {
-      if (!byEmp[r.empId]) byEmp[r.empId] = { name: r.name, start: null, end: null };
-      if (r.type === 'start') byEmp[r.empId].start = r; else byEmp[r.empId].end = r;
-    }
-    const buildRow = (empId, name, rec, inRoster) => {
-      const start = rec ? rec.start : null, end = rec ? rec.end : null;
-      const status = (start && end) ? 'complete' : (start || end) ? 'partial' : 'absent';
-      return { empId, name, inRoster, start, end, worked: workedLabel(start, end), status };
-    };
-    const rows = [];
-    const seen = new Set();
-    for (const e of await db.listEmployees()) { seen.add(e.empId); rows.push(buildRow(e.empId, e.name, byEmp[e.empId], true)); }
-    for (const id of Object.keys(byEmp)) { if (!seen.has(id)) rows.push(buildRow(id, byEmp[id].name, byEmp[id], false)); }
-    rows.sort((a, b) => a.name.localeCompare(b.name));
-    res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    res.json({ ok: true, deleted: await db.deleteStudents(ids) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ---- ADMIN: stored photo (proxied from Storage; bucket is private) ----
-app.get('/api/photo/:file', requireAdmin, async (req, res) => {
+// ---------------- HackerRank connect + scrape ----------------
+app.post('/api/hr/connect', requireAdmin, async (req, res) => {
   try {
-    const file = path.basename(req.params.file);
-    const buf = await db.downloadPhoto(file);
-    if (!buf) return res.status(404).end();
-    res.type('jpg').send(buf);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    if (MOCK) { const t = crypto.randomUUID(); hrSessions.set(t, { mock: true }); return res.json({ ok: true, hrToken: t, mock: true }); }
+    const { email, password } = req.body || {};
+    const { jar, csrfToken } = await login(email, password);
+    const t = crypto.randomUUID(); hrSessions.set(t, { jar, csrfToken });
+    res.json({ ok: true, hrToken: t });
+  } catch (e) { res.status(401).json({ error: e.message }); }
 });
 
-// ---- ADMIN: grouped records (employee x date) ----
-app.get('/api/records', requireAdmin, async (req, res) => {
-  try {
-    const groups = {};
-    for (const r of await db.listRecords()) {
-      const key = r.empId + '||' + (r.date || 'no-date');
-      if (!groups[key]) groups[key] = { name: r.name, empId: r.empId, date: r.date || '', start: null, end: null };
-      groups[key].name = r.name;
-      if (r.type === 'start') groups[key].start = r; else groups[key].end = r;
-    }
-    const rows = Object.values(groups).sort((a, b) => (b.date || '').localeCompare(a.date || '') || a.name.localeCompare(b.name));
-    for (const g of rows) g.worked = workedLabel(g.start, g.end);
-    res.json(rows);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
+const SCRAPE_CAP = 2000; // max users compared per scrape
 
-// ---- ADMIN: CSV export ----
-app.get('/api/export', requireAdmin, async (req, res) => {
-  try {
-    const groups = {};
-    for (const r of await db.listRecords()) {
-      const key = r.empId + '||' + (r.date || 'no-date');
-      if (!groups[key]) groups[key] = { name: r.name, empId: r.empId, date: r.date || '', start: null, end: null };
-      if (r.type === 'start') groups[key].start = r; else groups[key].end = r;
-    }
-    const lines = [['Name', 'Employee ID', 'Date', 'Start Time', 'End Time', 'Worked']];
-    for (const g of Object.values(groups)) {
-      lines.push([g.name, g.empId, g.date, g.start ? g.start.time : '', g.end ? g.end.time : '', workedLabel(g.start, g.end)]);
-    }
-    const csv = lines.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="attendance.csv"');
-    res.send(csv);
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ---- ADMIN: edit one entry's time (recomputes capture instant + Worked) ----
-app.patch('/api/records/:id', requireAdmin, async (req, res) => {
-  try {
-    const rec = await db.getRecord(req.params.id);
-    if (!rec) return res.status(404).json({ error: 'Record not found.' });
-    const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(req.body.time || '').trim());
-    if (!m) return res.status(400).json({ error: 'Time must be HH:MM or HH:MM:SS (24-hour).' });
-    const hh = +m[1], mm = +m[2], ss = m[3] ? +m[3] : 0;
-    if (hh > 23 || mm > 59 || ss > 59) return res.status(400).json({ error: 'Invalid time value.' });
-    const p = n => String(n).padStart(2, '0');
-    const time = `${p(hh)}:${p(mm)}:${p(ss)}`;
-    // India Standard Time has no DST, so the offset is always +05:30.
-    const capturedAt = new Date(`${rec.date}T${time}+05:30`).toISOString();
-    await db.updateRecord(rec.id, { time, capturedAt });
-    res.json({ ok: true, time });
-  } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ---- ADMIN: delete one entry (record row + its photo) ----
-app.delete('/api/records/:id', requireAdmin, async (req, res) => {
-  try { await db.deleteRecord(req.params.id); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-// ---- ADMIN: clear all (records + stored photos) ----
-app.delete('/api/records', requireAdmin, async (req, res) => {
-  try { await db.clearRecords(); res.json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-if (require.main === module) {
-  app.listen(PORT, () => console.log(`Attendance Tracker running at http://localhost:${PORT}`));
+// Resolve which usernames to scrape for a contest: the mapped roster (capped),
+// falling back to the leaderboard usernames if no students are mapped.
+async function resolveScrapeTargets(contest, leaderboard) {
+  const roster = await db.listStudentsForContest(contest.id);
+  let targets = roster.map((s) => String(s.hrUsername || '').trim()).filter(Boolean);
+  // dedupe case-insensitively, preserve first spelling
+  const seen = new Set(); const deduped = [];
+  for (const u of targets) { const k = u.toLowerCase(); if (!seen.has(k)) { seen.add(k); deduped.push(u); } }
+  targets = deduped;
+  let source = 'roster';
+  if (!targets.length) { targets = (leaderboard || []).map((l) => l.username).filter(Boolean); source = 'leaderboard'; }
+  const capped = targets.length > SCRAPE_CAP;
+  return { targets: targets.slice(0, SCRAPE_CAP), source, capped, rosterCount: roster.length };
 }
 
-module.exports = { app, splitDateTime, workedLabel, ADMIN_PASSWORD };
+function assembleDashboard({ slug, contest, leaderboard, questions, userMap, reference }) {
+  const users = leaderboard.map((entry) => {
+    const status = userMap.get(entry.username) || {}; let solved = 0, attempted = 0, score = 0;
+    const questionStatus = {};
+    for (const q of questions) {
+      const cell = status[q.name];
+      if (cell) { questionStatus[q.name] = cell; if (cell.solved) solved++; if (cell.attempted) attempted++; score += cell.score || 0; }
+      else questionStatus[q.name] = { score: 0, points: q.points, attempted: false, solved: false };
+    }
+    return { username: entry.username, rank: entry.rank, computedScore: score, solved, attempted, questionStatus };
+  });
+  const totalSolves = users.reduce((a, u) => a + u.solved, 0); const qc = questions.length;
+  return {
+    contest: { slug, name: contest?.name || slug, challengesCount: qc },
+    summary: { totalUsers: users.length, totalQuestions: qc, avgSolved: users.length ? +(totalSolves / users.length).toFixed(2) : 0, overallCompletion: users.length && qc ? Math.round((totalSolves / (users.length * qc)) * 100) : 0 },
+    questions, users, reference,
+  };
+}
+
+// Scrape a college's contest with live progress (SSE).
+app.get('/api/scrape-stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders?.();
+  const send = (ev, d) => res.write(`event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let aborted = false; req.on('close', () => { aborted = true; });
+  try {
+    const { adminToken, hrToken, contestId } = req.query;
+    if (!adminToken || !adminTokens.has(adminToken)) { send('failed', { error: 'Admin auth required.' }); return res.end(); }
+    const session = hrSessions.get(hrToken);
+    if (!session) { send('failed', { error: 'Connect your HackerRank account first.' }); return res.end(); }
+    const ct = await db.getContest(contestId);
+    if (!ct || !ct.slug) { send('failed', { error: 'Contest has no link.' }); return res.end(); }
+    const slug = ct.slug;
+
+    if (MOCK || session.mock) {
+      const dash = buildMockDashboard(slug, 60); const total = dash.summary.totalUsers;
+      for (let i = 1; i <= total && !aborted; i++) { send('progress', { phase: 'comparing', completed: i, total }); await sleep(15); }
+      if (!aborted) { const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug); send('done', { ...saved, summary: dash.summary, contest: dash.contest }); }
+      return res.end();
+    }
+    const { jar, csrfToken } = session;
+    // Leaderboard is fetched only for ranks + a reference hacker (best-effort).
+    send('progress', { phase: 'leaderboard', completed: 0, total: 0 });
+    let leaderboard = [];
+    try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug, onPage: (c) => send('progress', { phase: 'leaderboard', completed: c, total: 0 }) }); } // no cap — full leaderboard for ranks
+    catch (e) { send('progress', { phase: 'leaderboard', completed: 0, total: 0, note: 'leaderboard unavailable: ' + e.message }); }
+    const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
+
+    const { targets, source, capped, rosterCount } = await resolveScrapeTargets(ct, leaderboard);
+    if (!targets.length) { send('failed', { error: 'No students mapped to this contest and no leaderboard entries. Upload a roster and map it to this contest.' }); return res.end(); }
+    send('progress', { phase: 'comparing', completed: 0, total: targets.length, source, capped, rosterCount });
+
+    const reference = (leaderboard[0] && leaderboard[0].username) || targets[0];
+    const { contest, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8, onProgress: (c, t) => { if (!aborted) send('progress', { phase: 'comparing', completed: c, total: t }); } });
+    if (aborted) return res.end();
+    // Build the user rows from the target list (roster), pulling rank from the leaderboard when present.
+    const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
+    const dash = assembleDashboard({ slug, contest, leaderboard: entries, questions, userMap, reference });
+    const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug);
+    send('done', { ...saved, summary: dash.summary, contest: dash.contest, source, capped });
+    res.end();
+  } catch (e) { send('failed', { error: e.message }); res.end(); }
+});
+
+// Topic of a question: admin-assigned, else parsed from "Topic - Title".
+function titleTag(name) { const m = String(name).split(/\s+[–—-]\s+/); return m.length >= 2 ? m[0].trim() : ''; }
+function resolveTopic(saved, name) { return (saved && saved[name]) || titleTag(name) || 'Other'; }
+
+// Latest scrape for a contest (admin) — used by the dashboard students table.
+app.get('/api/contest-dashboard/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const [dash, topics, categories, students] = await Promise.all([
+      contest.slug ? cachedLatestScrape(contest.slug) : null,
+      contest.slug ? db.getTopics(contest.slug) : {},
+      contest.slug ? db.getQuestionCategories(contest.slug) : {},
+      db.listStudentsForContest(contest.id),
+    ]);
+    res.json({ contest, college: contest.college, dashboard: dash, topics, categories, students });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Topics editor (admin): list questions + current topics for a contest.
+app.get('/api/topics/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
+    const saved = contest.slug ? await db.getTopics(contest.slug) : {};
+    const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
+    const questions = dash ? dash.questions.map((q) => ({ name: q.name, topic: saved[q.name] || '', suggested: titleTag(q.name), category: cats[q.name] || '' })) : [];
+    res.json({ contest, slug: contest.slug, contestUrl: contest.contestUrl || '', hasScrape: !!dash, questions });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/topics/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    res.json({ ok: true, ...(await db.saveTopics(contest.slug, req.body?.map || {})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Distinct topics of a contest (from saved topics / title fallback).
+async function distinctTopics(slug, dash) {
+  const saved = await db.getTopics(slug);
+  const seen = new Set(); const out = [];
+  for (const q of (dash?.questions || [])) { const t = resolveTopic(saved, q.name); if (!seen.has(t)) { seen.add(t); out.push(t); } }
+  return out;
+}
+// Topic videos editor (admin)
+app.get('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
+    const videos = contest.slug ? await db.getTopicVideos(contest.slug) : {};
+    const topics = (await distinctTopics(contest.slug, dash)).map((t) => ({ name: t, videos: videos[t] || [] }));
+    res.json({ contest, hasScrape: !!dash, topics });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    res.json({ ok: true, ...(await db.saveTopicVideos(contest.slug, req.body?.map || {})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Question categories (In-class / Post-class / Challenges)
+app.get('/api/question-categories/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
+    const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
+    const questions = dash ? dash.questions.map((q) => ({ name: q.name, category: cats[q.name] || '' })) : [];
+    res.json({ contest, hasScrape: !!dash, questions });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/question-categories/:contestId', requireAdmin, async (req, res) => {
+  try {
+    const contest = await db.getContest(req.params.contestId);
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    res.json({ ok: true, ...(await db.saveQuestionCategories(contest.slug, req.body?.map || {})) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Build per-student daily questions-completed from stored snapshots. Shared by
+// the admin Daily tab and the read-only shared view.
+async function computeDaily(contest, N = 10) {
+  const [series, roster] = await Promise.all([
+    contest.slug ? cachedScrapeSeries(contest.slug) : [],
+    db.listStudentsForContest(contest.id),
+  ]);
+  const startIdx = Math.max(0, series.length - N);
+  const days = series.map((s) => s.day).slice(startIdx);
+  const students = roster.map((s) => {
+    const key = (s.usernameKey || s.hrUsername || '').toLowerCase();
+    let prev = 0; const daily = [];
+    for (const snap of series) {
+      const cur = snap.solved[key] != null ? snap.solved[key] : prev; // carry forward if absent
+      daily.push(Math.max(0, cur - prev));
+      prev = cur;
+    }
+    return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, daily: daily.slice(startIdx), total: prev };
+  }).sort((a, b) => b.total - a.total);
+  return { days, students };
+}
+
+// Per-student daily questions-completed (derived from daily snapshots).
+app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
+ try {
+  const contest = await db.getContest(req.params.contestId);
+  if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+  const N = Math.min(Math.max(parseInt(req.query.days, 10) || 10, 1), 60); // last N days (default 10)
+  const { days, students } = await computeDaily(contest, N);
+  res.json({ contest: { name: contest.name }, days, students });
+ } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- Student portal (access code) ----------------
+app.post('/api/student/login', async (req, res) => {
+  try {
+    const { college, accessCode } = req.body || {};
+    if (!college || !accessCode) return res.status(400).json({ error: 'College and access code are required.' });
+    if (!(await db.verifyCollegeCode(college, accessCode))) return res.status(401).json({ error: 'Wrong college or access code.' });
+    const c = await db.getCollegeByName(college);
+    const students = (await db.listStudents({ college: c.name })).map((s) => ({ name: s.name, hrUsername: s.hrUsername }));
+    res.json({ ok: true, college: c.name, students });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Contests visible to a specific student (only the ones they're mapped to).
+app.post('/api/student/contests', async (req, res) => {
+  try {
+    const { college, accessCode, hrUsername } = req.body || {};
+    if (!(await db.verifyCollegeCode(college, accessCode))) return res.status(401).json({ error: 'Wrong college or access code.' });
+    const c = await db.getCollegeByName(college);
+    res.json({ contests: (await db.listContestsForStudent(c.name, hrUsername)).map((ct) => ({ id: ct.id, name: ct.name })) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/student/practice', async (req, res) => {
+ try {
+  const { college, accessCode, hrUsername, contestId } = req.body || {};
+  if (!(await db.verifyCollegeCode(college, accessCode))) return res.status(401).json({ error: 'Wrong college or access code.' });
+  const c = await db.getCollegeByName(college);
+  // Choose the requested contest, else the college's first contest.
+  const contests = await db.listContests(c.name);
+  const ct = contests.find((x) => String(x.id) === String(contestId)) || contests[0];
+  const slug = ct?.slug || c.slug;
+  const dash = slug ? await cachedLatestScrape(slug) : null;
+  let contest = null, questions = [], stats = null, topicVideos = {};
+  if (dash) {
+    contest = { name: (ct && ct.name) || dash.contest.name };
+    topicVideos = await db.getTopicVideos(slug);
+    const saved = await db.getTopics(slug);
+    const cats = await db.getQuestionCategories(slug);
+    const u = dash.users.find((x) => x.username.toLowerCase() === String(hrUsername).toLowerCase());
+    questions = dash.questions.map((q) => {
+      const st = (u && u.questionStatus[q.name]) || { score: 0, points: q.points, solved: false, attempted: false };
+      return { name: q.name, url: q.url, points: q.points, topic: resolveTopic(saved, q.name), category: cats[q.name] || '', score: st.score || 0, solved: !!st.solved, attempted: !!st.attempted };
+    });
+    const total = dash.questions.length;
+    const sorted = dash.users.slice().sort((a, b) => b.computedScore - a.computedScore);
+    const rank = u ? sorted.findIndex((x) => x.username === u.username) + 1 : null;
+    stats = {
+      inContest: !!u, solved: u ? u.solved : 0, total, score: u ? u.computedScore : 0,
+      attempted: u ? u.attempted : 0, completion: total ? Math.round(((u ? u.solved : 0) / total) * 100) : 0,
+      rank, participants: dash.users.length,
+    };
+  }
+  res.json({ contest, questions, hrUsername, stats, topicVideos });
+ } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ---------------- Read-only shared dashboard (token) ----------------
+app.get('/api/shared/:token', async (req, res) => {
+  try {
+    const contest = await db.getContestByShareToken(req.params.token);
+    if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
+    const [dash, topics, rosterRaw, topicVideos, categories] = await Promise.all([
+      contest.slug ? cachedLatestScrape(contest.slug) : null,
+      contest.slug ? db.getTopics(contest.slug) : {},
+      db.listStudentsForContest(contest.id),
+      contest.slug ? db.getTopicVideos(contest.slug) : {},
+      contest.slug ? db.getQuestionCategories(contest.slug) : {},
+    ]);
+    const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
+    const daily = await computeDaily(contest, 30); // last 30 days for the shared Daily tab
+    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
+
+app.get('/student', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'student.html')));
+// ---------------- Automatic sync (scheduled) ----------------
+const autoState = { lastRun: null, lastResult: null, running: false };
+async function scrapeAndSave(session, contest) {
+  const slug = contest.slug;
+  if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); invalidateScrapeCache(slug); return { slug, users: dash.summary.totalUsers }; }
+  const { jar, csrfToken } = session;
+  let leaderboard = [];
+  try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug }); } catch { /* ranks are optional; full leaderboard */ }
+  const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
+  const { targets } = await resolveScrapeTargets(contest, leaderboard);
+  if (!targets.length) throw new Error('no students mapped and no leaderboard entries');
+  const reference = (leaderboard[0] && leaderboard[0].username) || targets[0];
+  const { contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8 });
+  const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
+  const dash = assembleDashboard({ slug, contest: c, leaderboard: entries, questions, userMap, reference });
+  await db.saveScrape(slug, dash); invalidateScrapeCache(slug);
+  return { slug, users: dash.summary.totalUsers };
+}
+async function autoSyncAll() {
+  if (autoState.running) return;
+  autoState.running = true;
+  try {
+    let session;
+    if (MOCK) session = { mock: true };
+    else { if (!HR_EMAIL || !HR_PASS) throw new Error('HR_EMAIL / HR_PASS env vars not set'); const { jar, csrfToken } = await login(HR_EMAIL, HR_PASS); session = { jar, csrfToken }; }
+    const contests = (await db.listContests()).filter((c) => c.slug);
+    let ok = 0; const errs = [];
+    for (const c of contests) { try { await scrapeAndSave(session, c); ok++; } catch (e) { errs.push(`${c.slug}: ${e.message}`); } }
+    autoState.lastRun = new Date().toISOString();
+    autoState.lastResult = `${ok}/${contests.length} contests synced${errs.length ? ' · ' + errs.length + ' failed' : ''}`;
+    console.log('[auto-sync]', autoState.lastResult);
+  } catch (e) {
+    autoState.lastRun = new Date().toISOString();
+    autoState.lastResult = 'failed: ' + e.message;
+    console.warn('[auto-sync] failed:', e.message);
+  } finally { autoState.running = false; }
+}
+app.get('/api/auto-sync/status', requireAdmin, (_req, res) => res.json({ enabled: AUTO_SYNC, times: AUTO_TIMES, lastRun: autoState.lastRun, lastResult: autoState.lastResult, running: autoState.running }));
+app.post('/api/auto-sync/run', requireAdmin, (_req, res) => { autoSyncAll(); res.json({ ok: true }); });
+
+if (AUTO_SYNC) {
+  let lastSlot = '';
+  setInterval(() => {
+    const d = new Date();
+    const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const slot = d.toDateString() + ' ' + hhmm;
+    if (AUTO_TIMES.includes(hhmm) && lastSlot !== slot) { lastSlot = slot; autoSyncAll(); }
+  }, 30 * 1000).unref?.();
+}
+
+app.get('/api/health', (_req, res) => res.json({ ok: true, mock: MOCK, storage: db.storageBackend() }));
+
+app.listen(PORT, () => {
+  console.log(`HackerRank Admin Dashboard → http://localhost:${PORT}${MOCK ? '  [MOCK]' : ''}`);
+  console.log(`Admin login: ${ADMIN_USER} / ${ADMIN_PASS}${ADMIN_USER === 'admin' && ADMIN_PASS === 'admin' ? '  (set ADMIN_USER/ADMIN_PASS env to change)' : ''}`);
+  console.log(`Storage: ${db.storageBackend()}`);
+  console.log(`Auto-sync: ${AUTO_SYNC ? 'ON at ' + AUTO_TIMES.join(', ') + (MOCK || (HR_EMAIL && HR_PASS) ? '' : ' (⚠ set HR_EMAIL/HR_PASS)') : 'off (set AUTO_SYNC=1)'}`);
+});

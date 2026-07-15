@@ -1,102 +1,96 @@
-# Attendance Tracker (Node.js)
+# HackerRank Admin Dashboard
 
-Employee attendance app with two sides:
+An admin dashboard (modeled on a LeetCode admin tool, but for **HackerRank**) that
+tracks students' contest progress per college. Admins manage colleges, rosters, and
+contests; students log into a separate portal with an access code to see their
+practice list.
 
-- **Employee Check-in** — enter Employee ID (the name **auto-fills from the roster** if the ID is registered), pick Start/End of day, **open the camera and take a photo**. The current date & time is stamped onto the photo and recorded automatically.
-- **Admin Dashboard** — two tabs:
-  - **Attendance** — pick a date and see every registered employee mapped to their attendance for that day: Start, End, Worked, a **Present / Partial / Absent** status, and the stored photos. Absentees (registered but no check-in) are flagged; check-ins from IDs not in the roster show as **walk-in**.
-  - **Employees** — the master roster. Add employees one at a time or **bulk-import** `Name, EmployeeID` lines. Remove employees (their past records are kept).
+It reuses the proven HackerRank contest scraper (`lib/hackerrank.js`): admin
+connects their HackerRank account, the app scrapes a college's contest leaderboard +
+per-question completion, and joins it to the student roster.
 
-Data is stored in **Supabase** (Postgres for records + roster, Storage for photos).
+## Storage: Supabase (Postgres)
 
-## Setup (one time)
+All data is stored in **Supabase**. There is no local fallback — the server won't
+start without a Supabase connection.
 
-1. **Create the tables + bucket.** In your Supabase project open **SQL Editor → New query**, paste the contents of [`supabase_setup.sql`](./supabase_setup.sql), and Run. (It also creates the private `attendance-photos` storage bucket.)
-2. **Get your keys.** Supabase → **Project Settings → API**. You need the **Project URL** and the **`service_role`** key (under "Project API keys").
-3. **Configure `.env`.** Copy the template and fill it in:
-   ```bash
-   cp .env.example .env
-   ```
-   Then edit `.env`:
-   ```
-   SUPABASE_URL=https://YOUR-ref.supabase.co
-   SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-   SUPABASE_BUCKET=attendance-photos
-   ADMIN_PASSWORD=yourSecret
-   ```
-   > 🔐 The `service_role` key is full admin access to your database. Keep it in `.env` only — never commit it, never share it. `.env` is git-ignored.
+**One-time setup:**
+
+1. Create a project at [supabase.com](https://supabase.com).
+2. In the dashboard → **SQL Editor** → paste and run [`schema.sql`](./schema.sql)
+   (creates the tables).
+3. Get your credentials: **Project Settings → API** → copy the **Project URL** and
+   the **`service_role`** key (keep this secret — it bypasses row-level security).
 
 ## Run
 
+Requires Node 18+.
+
 ```bash
 npm install
-npm run checkdb   # verifies the Supabase connection, tables, and bucket
-npm start
+SUPABASE_URL="https://xxxx.supabase.co" \
+SUPABASE_SERVICE_KEY="your-service-role-key" \
+npm start            # http://localhost:4000
 ```
 
-`checkdb` should print three ✓ lines. If it errors, re-check step 1 (SQL was run) and your keys.
+**Admin login** defaults to `admin` / `admin`. Override with `ADMIN_USER` /
+`ADMIN_PASS`.
 
-### URLs
-
-| URL | Who | Purpose |
-|-----|-----|---------|
-| `http://localhost:3000/` | employees | check-in page (public, no password) |
-| `http://localhost:3000/admin/login` | admin | password login |
-| `http://localhost:3000/admin` | admin | dashboard (redirects to login if not signed in) |
-
-## Admin login
-
-- Password-only login (set via the `ADMIN_PASSWORD` env var). Checked with a timing-safe compare.
-- On success the server sets an **httpOnly** session cookie that lasts 8 hours; "Log out" clears it.
-- The dashboard, CSV export, record data, **and the stored photos** all require a valid session — none are public.
-
-> Live camera capture requires a **secure context**: `localhost` works out of the box. If employees connect from their phones over a plain `http://<lan-ip>` address, the browser will block the camera — you'll need to serve over HTTPS (e.g. a reverse proxy or an `ngrok`/`cloudflared` tunnel).
-
-## How attendance is captured
-
-1. Employee opens the camera in the browser and taps **Capture photo**.
-2. The app draws the current timestamp onto the captured frame and sends it to the server along with the capture time.
-3. The server **validates the capture time against its own clock** (rejects if the device clock is off by more than 5 minutes) so attendance can't be back/post-dated.
-4. The image is uploaded to the **Supabase Storage** bucket, and the record (name, id, type, date, time, timestamps, photo filename) is inserted into the **`records`** table.
-
-The timestamp comes from the moment of capture — not from reading text off the image — so it's reliable and needs no OCR.
-
-## Data & storage
-
-- **`records`** table — attendance records (photo filename referenced, not the bytes).
-- **`employees`** table — the roster (`emp_id`, `name`).
-- **`attendance-photos`** Storage bucket (private) — the captured images. The admin dashboard streams them through the server; the bucket itself is never public.
-- **Clear all records** deletes the rows and removes the associated photos from the bucket.
-
-> ⚠️ You are storing employee photos. That's personal data — put a retention policy and access control in place before using this beyond a prototype.
-
-## Endpoints
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| POST | `/api/checkin` | public | multipart: `name`, `empId`, `type` (start\|end), `captureTime`, `photo` |
-| GET | `/api/lookup/:empId` | public | roster name for an ID (check-in auto-fill) → `{ name }` |
-| POST | `/api/admin/login` | public | body `{ password }` → sets session cookie |
-| POST | `/api/admin/logout` | — | clears session |
-| GET | `/api/day/:date` | admin | all employees mapped to that date, incl. absentees |
-| GET | `/api/employees` | admin | list roster |
-| POST | `/api/employees` | admin | add/update one `{ name, empId }` |
-| POST | `/api/employees/bulk` | admin | body `{ text }` of `Name,EmployeeID` lines |
-| DELETE | `/api/employees/:empId` | admin | remove from roster |
-| GET | `/api/records` | admin | grouped records (employee × date) |
-| GET | `/api/photo/:file` | admin | serve a stored photo |
-| GET | `/api/export` | admin | CSV download |
-| DELETE | `/api/records` | admin | clear all records + photos |
-
-## Tests
+**Mock mode** still needs Supabase (only the HackerRank scrape is faked):
 
 ```bash
-npm run checkdb   # live check: Supabase connection, table read/write, bucket upload/download
-npm test          # offline check: auth, route gating, validation, time helpers (no DB needed)
+SUPABASE_URL=… SUPABASE_SERVICE_KEY=… MOCK=1 npm start
 ```
 
-## Production gaps (not yet done)
+> Note: switching to Supabase starts empty — data from the old local SQLite
+> (`data/app.db`) is **not** migrated automatically.
 
-- **Sessions are in-memory** — restarting the server logs the admin out. Fine for one instance; use a session store for multi-instance.
-- **HTTPS** — required for camera access off localhost, and for the login cookie to be truly safe in transit. Add `Secure` to the cookie once you're on HTTPS.
-- **RLS policies** — the app relies on the service_role key server-side; tables have RLS enabled with no policies (deny-all to anon). Don't expose the anon key with permissive policies unless you intend to.
+## Flow
+
+1. **Sign in** as admin.
+2. **Colleges** tab — add a college with a **student access code** (never shown; you
+   can overwrite it).
+3. **Upload** tab — pick the college and upload an Excel/CSV roster. Required
+   columns: `Student Name`, `HackerRank Username` (or profile URL). Optional:
+   `Register Number`, `Email`, `Department`, `Section`, `Year`, `Campus`. A template
+   is downloadable in-app.
+4. **Dashboard** tab — pick a college, then add one or more **contests** to it with
+   **＋ Contest** (name + HackerRank link). A college can have **multiple contests**.
+   Select a contest, **Connect HackerRank**, then **Sync now** to scrape it (live
+   progress). The students table joins the roster to that contest: solved, score,
+   completion. Filter by department / section / year, search, **Export to Excel**,
+   delete selected, or click a name for a full performance breakdown.
+5. **Topics** tab — pick a college and one of its contests, then tag each question
+   with a topic (Auto-fill from titles, or type). These drive the "By topic"
+   breakdowns.
+
+## Student portal
+
+Separate page at **/student**. A student enters their **college name + access code**,
+picks their name and a **contest**, and sees two sections: a **Dashboard** (stat
+cards + by-topic breakdown) and **Practice** (paginated, 10 per page, with Solve
+links). They can switch contests from the dropdown at the top.
+
+## Notes & limits
+
+- This is the **first milestone** (foundation). Planned next: the practice-assignment
+  system (Domain → Topic → Question hierarchy + completion breakdown + hardest
+  questions).
+- HackerRank has no public Easy/Medium/Hard profile or global rank like LeetCode, so
+  stats here are **contest-based** (solved / score / completion), not a global
+  profile.
+- Access codes are a convenience gate, not strong security. Don't expose this server
+  to the public internet without adding real auth + HTTPS.
+- Data is stored locally in SQLite (`data/app.db`) via Node's built-in `node:sqlite`,
+  with a JSON-file fallback. The HackerRank session (for scraping) lives in memory
+  only.
+
+## Layout
+
+```
+server.js          Express: admin auth, colleges, roster, scrape (SSE), student portal
+lib/hackerrank.js  Contest scraper (login, leaderboard, per-question compare)
+lib/db.js          SQLite/JSON storage: colleges, students, scrapes
+lib/mock.js        Synthetic contest data for MOCK mode
+public/            Admin app (index.html, app.js) + student portal (student.html)
+```
