@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Attendance — Admin Dashboard</title>
+<style>
+  :root{--bg:#0f172a;--card:#1e293b;--muted:#94a3b8;--txt:#e2e8f0;--acc:#F15137;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444;--border:#334155;--field:#0b1424;}
+  :root[data-theme="light"]{--bg:#f4f6f9;--card:#ffffff;--muted:#5b6572;--txt:#1e293b;--border:#dbe1e8;--field:#eef1f5;}
+  :root[data-theme="light"] .pill.start,:root[data-theme="light"] .pill.complete{color:#15803d;}
+  :root[data-theme="light"] .pill.end,:root[data-theme="light"] .pill.partial{color:#b45309;}
+  :root[data-theme="light"] .pill.absent{color:#b91c1c;}
+  :root[data-theme="light"] .tag{color:#475569;}
+  *{box-sizing:border-box;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;}
+  body{margin:0;background:var(--bg);color:var(--txt);}
+  header{padding:16px 22px;background:var(--card);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
+  header h1{font-size:18px;margin:0;}
+  .tabs{display:flex;gap:8px;}
+  .tab{padding:8px 16px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--txt);cursor:pointer;font-size:14px;}
+  .tab.active{background:var(--acc);color:#ffffff;border-color:var(--acc);font-weight:600;}
+  .right{margin-left:auto;display:flex;gap:10px;}
+  main{max-width:1080px;margin:0 auto;padding:24px 18px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:22px;margin-bottom:18px;}
+  h2{font-size:15px;margin:0 0 14px;}
+  table{width:100%;border-collapse:collapse;font-size:14px;}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em;}
+  tr.absent td{opacity:.6;}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;}
+  .pill.start{background:rgba(34,197,94,.15);color:#86efac;}
+  .pill.end{background:rgba(245,158,11,.15);color:#fcd34d;}
+  .pill.complete{background:rgba(34,197,94,.15);color:#86efac;}
+  .pill.partial{background:rgba(245,158,11,.15);color:#fcd34d;}
+  .pill.absent{background:rgba(239,68,68,.15);color:#fca5a5;}
+  .tag{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:5px;font-size:10px;background:rgba(148,163,184,.18);color:#cbd5e1;}
+  .missing{color:#64748b;}
+  .mini{border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:5px;cursor:pointer;font-size:12px;padding:3px 10px;}
+  .mini:hover{color:var(--txt);border-color:var(--acc);}
+  .mini.danger:hover{color:#fca5a5;border-color:var(--bad);}
+  .thumb{width:56px;height:42px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:#000;}
+  .thumb.ph{display:inline-block;color:#475569;font-size:10px;text-align:center;line-height:42px;}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
+  input,textarea{padding:10px 12px;border-radius:9px;border:1px solid var(--border);background:var(--field);color:var(--txt);font-size:14px;}
+  input.search{max-width:220px;}
+  .ghost{padding:9px 14px;border:1px solid var(--border);background:transparent;color:var(--txt);border-radius:9px;cursor:pointer;font-size:13px;text-decoration:none;display:inline-block;}
+  .btn{padding:10px 16px;border:none;border-radius:9px;background:var(--acc);color:#ffffff;font-weight:600;cursor:pointer;font-size:14px;}
+  .empty{text-align:center;color:var(--muted);padding:34px 10px;}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;}
+  .row label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px;}
+  .msg{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px;}
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:50;padding:20px;}
+  .lightbox img{max-width:100%;max-height:100%;border-radius:10px;}
+  .summary{font-size:13px;color:var(--muted);margin-bottom:12px;}
+  .calrow{display:flex;gap:16px;flex-wrap:wrap;align-items:stretch;margin-bottom:18px;}
+  .cal{flex:0 0 264px;width:264px;background:var(--field);border:1px solid var(--border);border-radius:12px;padding:12px;}
+  .stats{flex:1;min-width:250px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:1fr;gap:12px;}
+  .stat{background:var(--field);border:1px solid var(--border);border-radius:10px;padding:12px 16px;cursor:pointer;display:flex;flex-direction:column;justify-content:center;transition:border-color .12s;}
+  .stat:hover{border-color:var(--acc);}
+  .stat.active{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset;}
+  .stat .n{font-size:26px;font-weight:700;line-height:1;}
+  .stat .l{font-size:11px;color:var(--muted);margin-top:6px;text-transform:uppercase;letter-spacing:.03em;}
+  .stat.total .n{color:var(--acc);}
+  .stat.present .n{color:#22c55e;}
+  .stat.partial .n{color:#f59e0b;}
+  .stat.absent .n{color:#ef4444;}
+  .pager{display:flex;align-items:center;gap:12px;margin-top:14px;font-size:13px;color:var(--muted);}
+  .pager button[disabled]{opacity:.4;cursor:not-allowed;}
+  .cal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+  .cal-head b{font-size:13px;}
+  .cal-nav{border:1px solid var(--border);background:transparent;color:var(--txt);border-radius:6px;cursor:pointer;font-size:13px;line-height:1;padding:3px 9px;}
+  .cal-nav:hover{border-color:var(--acc);color:var(--acc);}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:2px;}
+  .cal-grid .dow{font-size:9px;color:var(--muted);text-align:center;padding:2px 0;text-transform:uppercase;letter-spacing:.02em;}
+  .cal-day{height:28px;display:flex;align-items:center;justify-content:center;border-radius:6px;cursor:pointer;font-size:12px;border:1px solid transparent;}
+  .cal-day:hover{background:rgba(241,81,55,.18);}
+  .cal-day.today{border-color:var(--acc);}
+  .cal-day.sel{background:var(--acc);color:#fff;font-weight:700;}
+  .cal-day.empty{cursor:default;}
+  .cal-day.empty:hover{background:transparent;}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗂️ Admin</h1>
+  <div class="tabs">
+    <button class="tab active" data-view="attendance">Attendance</button>
+    <button class="tab" data-view="employees">Employees</button>
+  </div>
+  <div class="right">
+    <button class="ghost" id="themeBtn">☀️ Light</button>
+    <a class="ghost" href="/">Check-in page</a>
+    <button class="ghost" id="logoutBtn">Log out</button>
+  </div>
+</header>
+
+<main>
+  <!-- ATTENDANCE (by date) -->
+  <section id="attendanceView">
+    <div class="card">
+      <div class="calrow">
+        <div id="cal" class="cal"></div>
+        <div id="stats" class="stats"></div>
+      </div>
+      <div class="toolbar">
+        <input class="search" id="search" placeholder="Filter by name or ID…">
+        <button class="ghost" id="refreshBtn">Refresh</button>
+        <a class="ghost" href="/api/export">Export CSV (all)</a>
+        <button class="ghost" id="clearBtn">Clear all records</button>
+      </div>
+      <div class="summary" id="summary"></div>
+      <div id="dayTable"><div class="empty">Loading…</div></div>
+    </div>
+  </section>
+
+  <!-- EMPLOYEES (roster) -->
+  <section id="employeesView" style="display:none;">
+    <div class="card">
+      <h2>Add employee</h2>
+      <div class="row">
+        <div><label>Employee ID</label><input id="empIdIn" placeholder="EMP1042"></div>
+        <div><label>Name</label><input id="empNameIn" placeholder="Priya Kumar"></div>
+        <button class="btn" id="addEmpBtn">Add</button>
+      </div>
+      <div class="msg" id="addMsg"></div>
+    </div>
+    <div class="card">
+      <h2>Bulk import</h2>
+      <p style="font-size:13px;color:var(--muted);margin:0 0 8px;">One employee per line as <code>EmployeeID, Name</code> (comma or tab separated). A header row like <code>ID,Name</code> is ignored.</p>
+      <textarea id="bulkText" rows="5" style="width:100%;" placeholder="EMP1042, Priya Kumar&#10;EMP1043, Arun Raj"></textarea>
+      <div style="margin-top:10px;"><button class="btn" id="bulkBtn">Import</button></div>
+      <div class="msg" id="bulkMsg"></div>
+    </div>
+  </section>
+</main>
+
+<div class="lightbox" id="lightbox"><img id="lightimg" alt="attendance photo"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+// ---- theme (persisted, shared across pages) ----
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  try{ localStorage.setItem('theme', t); }catch(e){}
+  const b=document.getElementById('themeBtn'); if(b) b.textContent = t==='light' ? '🌙 Dark' : '☀️ Light';
+}
+(function(){ let t='dark'; try{ t=localStorage.getItem('theme')||'dark'; }catch(e){} applyTheme(t); })();
+document.getElementById('themeBtn').onclick=()=>{
+  const cur=document.documentElement.getAttribute('data-theme')==='light'?'light':'dark';
+  applyTheme(cur==='light'?'dark':'light');
+};
+function toLogin(){ window.location.href='/admin/login'; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+async function api(path, opts){
+  const res=await fetch(path, opts);
+  if(res.status===401){ toLogin(); throw new Error('unauth'); }
+  return res;
+}
+
+// ---- tabs ----
+document.querySelectorAll('.tab').forEach(t=>{
+  t.onclick=()=>{
+    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+    t.classList.add('active');
+    const v=t.dataset.view;
+    $('attendanceView').style.display=v==='attendance'?'':'none';
+    $('employeesView').style.display=v==='employees'?'':'none';
+    if(v==='attendance') loadDay();
+  };
+});
+
+// ---- attendance by date ----
+let DAY=[];
+const p2=n=>String(n).padStart(2,'0');
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()); }
+
+let selectedDate=todayStr();
+let calY, calM;
+function initCal(){ const d=new Date(); calY=d.getFullYear(); calM=d.getMonth(); renderCal(); }
+function renderCal(){
+  const first=new Date(calY, calM, 1);
+  const startDow=(first.getDay()+6)%7;                 // Monday-first grid
+  const days=new Date(calY, calM+1, 0).getDate();
+  const label=first.toLocaleString('en-GB',{month:'long',year:'numeric'});
+  let h=`<div class="cal-head"><button class="cal-nav" id="calPrev">‹</button><b>${label}</b><button class="cal-nav" id="calNext">›</button></div><div class="cal-grid">`;
+  for(const d of ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']) h+=`<div class="dow">${d}</div>`;
+  for(let i=0;i<startDow;i++) h+='<div class="cal-day empty"></div>';
+  for(let day=1;day<=days;day++){
+    const ds=`${calY}-${p2(calM+1)}-${p2(day)}`;
+    const cls=['cal-day'];
+    if(ds===todayStr()) cls.push('today');
+    if(ds===selectedDate) cls.push('sel');
+    h+=`<div class="${cls.join(' ')}" data-date="${ds}">${day}</div>`;
+  }
+  h+='</div>';
+  $('cal').innerHTML=h;
+  $('calPrev').onclick=()=>{ if(--calM<0){calM=11;calY--;} renderCal(); };
+  $('calNext').onclick=()=>{ if(++calM>11){calM=0;calY++;} renderCal(); };
+  $('cal').querySelectorAll('.cal-day[data-date]').forEach(c=>c.onclick=()=>{ selectedDate=c.dataset.date; renderCal(); loadDay(); });
+}
+$('refreshBtn').onclick=loadDay;
+$('search').oninput=()=>{ page=1; renderDay(); };
+
+const PAGE_SIZE=50;
+let statusFilter='all';   // all | complete | partial | absent
+let page=1;
+
+async function loadDay(){
+  try{ DAY=await (await api('/api/day/'+selectedDate)).json(); }
+  catch(e){ if(e.message!=='unauth') DAY=[]; }
+  page=1;
+  renderDay();
+}
+function renderStats(){
+  const total=DAY.length;
+  const present=DAY.filter(r=>r.status==='complete').length;
+  const partial=DAY.filter(r=>r.status==='partial').length;
+  const absent=DAY.filter(r=>r.status==='absent').length;
+  const card=(f,cls,label,n)=>`<div class="stat ${cls} ${statusFilter===f?'active':''}" data-filter="${f}"><div class="n">${n}</div><div class="l">${label}</div></div>`;
+  $('stats').innerHTML=
+    card('all','total','Total employees',total)+
+    card('complete','present','Present',present)+
+    card('partial','partial','Partial',partial)+
+    card('absent','absent','Absent',absent);
+  $('stats').querySelectorAll('.stat').forEach(s=>s.onclick=()=>{
+    statusFilter = statusFilter===s.dataset.filter ? 'all' : s.dataset.filter; // click again to clear
+    page=1; renderDay();
+  });
+}
+function renderDay(){
+  renderStats();
+  const q=$('search').value.trim().toLowerCase();
+  let rows=DAY;
+  if(statusFilter!=='all') rows=rows.filter(r=>r.status===statusFilter);
+  if(q) rows=rows.filter(r=>r.name.toLowerCase().includes(q)||r.empId.toLowerCase().includes(q));
+
+  const fLabel={all:'all',complete:'present',partial:'partial',absent:'absent'}[statusFilter];
+  $('summary').textContent=`Attendance for ${selectedDate}`+(statusFilter==='all'?'':` · showing ${fLabel}`);
+
+  const el=$('dayTable');
+  if(!rows.length){ el.innerHTML='<div class="empty">No matching employees for this date/filter.</div>'; return; }
+
+  const pages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE));
+  if(page>pages) page=pages;
+  const startI=(page-1)*PAGE_SIZE;
+  const pageRows=rows.slice(startI,startI+PAGE_SIZE);
+
+  let html='<table><thead><tr><th>Name</th><th>Employee ID</th><th>Status</th><th>Start</th><th>End</th><th>Worked</th><th>Start photo</th><th>End photo</th><th></th></tr></thead><tbody>';
+  for(const r of pageRows){
+    const st=r.status==='complete'?'<span class="pill complete">present</span>':
+             r.status==='partial'?'<span class="pill partial">partial</span>':
+             '<span class="pill absent">absent</span>';
+    const tag=r.inRoster?'':'<span class="tag">walk-in</span>';
+    const start=entryCell(r.start,'start');
+    const end=entryCell(r.end,'end');
+    const worked=r.worked?`<b>${esc(r.worked)}</b>`:'<span class="missing">—</span>';
+    const del=`<button class="mini danger" data-empid="${esc(r.empId)}" data-roster="${r.inRoster?'1':'0'}" data-name="${esc(r.name)}" data-start="${r.start?esc(r.start.id):''}" data-end="${r.end?esc(r.end.id):''}">Delete</button>`;
+    html+=`<tr class="${r.status==='absent'?'absent':''}"><td>${esc(r.name)}${tag}</td><td>${esc(r.empId)}</td><td>${st}</td><td>${start}</td><td>${end}</td><td>${worked}</td><td>${thumb(r.start)}</td><td>${thumb(r.end)}</td><td>${del}</td></tr>`;
+  }
+  html+='</tbody></table>';
+  html+=`<div class="pager">`+
+    `<button class="ghost" data-pg="prev" ${page<=1?'disabled':''}>‹ Prev</button>`+
+    `<span>${startI+1}–${startI+pageRows.length} of ${rows.length}${pages>1?` · page ${page}/${pages}`:''}</span>`+
+    `<button class="ghost" data-pg="next" ${page>=pages?'disabled':''}>Next ›</button>`+
+    `</div>`;
+  el.innerHTML=html;
+  el.querySelectorAll('img.thumb').forEach(im=>im.onclick=()=>{ $('lightimg').src=im.dataset.full; $('lightbox').style.display='flex'; });
+  el.querySelectorAll('button[data-empid]').forEach(b=>b.onclick=()=>deleteRow(b.dataset));
+  el.querySelectorAll('button[data-pg]').forEach(b=>b.onclick=()=>{
+    if(b.dataset.pg==='prev'&&page>1) page--;
+    else if(b.dataset.pg==='next'&&page<pages) page++;
+    renderDay();
+  });
+}
+function entryCell(entry, cls){
+  if(!entry) return '<span class="missing">—</span>';
+  return `<span class="pill ${cls}">${esc(entry.time)}</span>`;
+}
+// Per-row delete. In-roster -> remove the employee from the roster.
+// Walk-in (not in roster) -> delete that date's attendance entries + photos.
+async function deleteRow(ds){
+  if(ds.roster==='1'){
+    if(!confirm(`Remove ${ds.name} (${ds.empid}) from the roster? Their past attendance records are kept.`)) return;
+    try{ await api('/api/employees/'+encodeURIComponent(ds.empid),{method:'DELETE'}); loadDay(); }catch(e){}
+  }else{
+    if(!confirm(`Delete ${ds.name}'s attendance for this date (and its photos)?`)) return;
+    try{
+      if(ds.start) await api('/api/records/'+encodeURIComponent(ds.start),{method:'DELETE'});
+      if(ds.end) await api('/api/records/'+encodeURIComponent(ds.end),{method:'DELETE'});
+      loadDay();
+    }catch(e){}
+  }
+}
+function thumb(r){
+  if(!r||!r.photo) return '<span class="thumb ph">—</span>';
+  const u='/api/photo/'+encodeURIComponent(r.photo);
+  return `<img class="thumb" src="${u}" data-full="${u}" alt="photo">`;
+}
+$('lightbox').onclick=()=>{ $('lightbox').style.display='none'; };
+$('clearBtn').onclick=async()=>{
+  if(!confirm('Delete ALL attendance records and their photos? This cannot be undone.')) return;
+  try{ await api('/api/records',{method:'DELETE'}); loadDay(); }catch(e){}
+};
+
+// ---- employees ----
+// Show a message, then auto-clear it after 10 seconds.
+const _msgTimers={};
+function flashMsg(id, text){
+  const el=$(id); if(!el) return;
+  el.textContent=text;
+  clearTimeout(_msgTimers[id]);
+  _msgTimers[id]=setTimeout(()=>{ el.textContent=''; }, 10000);
+}
+$('addEmpBtn').onclick=async()=>{
+  const empId=$('empIdIn').value.trim(), name=$('empNameIn').value.trim();
+  if(!empId||!name){ flashMsg('addMsg','Enter both name and employee ID.'); return; }
+  try{
+    const res=await api('/api/employees',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,empId})});
+    const d=await res.json();
+    if(res.ok){ flashMsg('addMsg','1 user added.'); $('empIdIn').value=''; $('empNameIn').value=''; }
+    else flashMsg('addMsg', d.error||'Could not save.');
+  }catch(e){}
+};
+$('bulkBtn').onclick=async()=>{
+  const text=$('bulkText').value;
+  if(!text.trim()){ flashMsg('bulkMsg','Paste some lines first.'); return; }
+  try{
+    const res=await api('/api/employees/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})});
+    const d=await res.json();
+    let msg=`${d.added} user${d.added===1?'':'s'} added`;
+    if(d.duplicates) msg+=`, ${d.duplicates} duplicate${d.duplicates===1?'':'s'} skipped`;
+    if(d.skipped) msg+=`, ${d.skipped} invalid skipped`;
+    flashMsg('bulkMsg', msg+'.');
+    $('bulkText').value='';
+  }catch(e){}
+};
+
+// ---- logout ----
+$('logoutBtn').onclick=async()=>{ try{ await fetch('/api/admin/logout',{method:'POST'}); }catch(e){} toLogin(); };
+
+initCal();
+loadDay();
+</script>
+</body>
+</html>
