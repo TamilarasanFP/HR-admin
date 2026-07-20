@@ -23,7 +23,7 @@ app.use(express.json({ limit: '12mb' }));
 // Gzip JSON API responses. The scrape payloads are multi-MB; gzip cuts them
 // ~10x over the wire. SSE is excluded so live progress isn't buffered.
 app.use((req, res, next) => {
-  if (req.path === '/api/scrape-stream' || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return next();
+  if (req.path.endsWith('-stream') || !/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return next();
   const _json = res.json.bind(res);
   res.json = (body) => {
     let buf; try { buf = Buffer.from(JSON.stringify(body)); } catch { return _json(body); }
@@ -153,6 +153,12 @@ app.get('/api/students', requireAdmin, async (req, res) => {
     res.json({ students: await db.listStudents({ college, department, section, year }) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+// Distinct department / section / year for a college — powers the manual-entry dropdowns.
+app.get('/api/student-facets', requireAdmin, async (req, res) => {
+  try { res.json(await db.getStudentFacets(req.query.college || '')); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Placeholder usernames that are not real HackerRank accounts.
 const PLACEHOLDER_USERNAMES = new Set(['sample', 'absent', 'na', 'n/a', 'nil', 'none', 'null', 'test', 'xxx', '-', '--', '.']);
 app.post('/api/students/upload', requireAdmin, async (req, res) => {
@@ -292,6 +298,40 @@ app.get('/api/scrape-stream', async (req, res) => {
   } catch (e) { send('failed', { error: e.message }); res.end(); }
 });
 
+// Sync EVERY contest across EVERY college, using the admin's connected
+// HackerRank session. Streams per-contest progress; one failure doesn't stop the run.
+app.get('/api/sync-all-stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache'); res.setHeader('Connection', 'keep-alive'); res.flushHeaders?.();
+  const send = (ev, d) => res.write(`event: ${ev}\ndata: ${JSON.stringify(d)}\n\n`);
+  let aborted = false; req.on('close', () => { aborted = true; });
+  try {
+    const { adminToken, hrToken } = req.query;
+    if (!adminToken || !adminTokens.has(adminToken)) { send('failed', { error: 'Admin auth required.' }); return res.end(); }
+    const session = hrSessions.get(hrToken);
+    if (!session) { send('failed', { error: 'Connect your HackerRank account first.' }); return res.end(); }
+    const contests = (await db.listContests()).filter((c) => c.slug);
+    if (!contests.length) { send('failed', { error: 'No contests have a HackerRank link yet.' }); return res.end(); }
+    send('start', { total: contests.length });
+    let ok = 0; const failures = [];
+    for (let i = 0; i < contests.length && !aborted; i++) {
+      const c = contests[i];
+      const at = { index: i + 1, total: contests.length, name: c.name, college: c.college };
+      send('contest', at);
+      try {
+        // NB: `total` here is the user count — keep it distinct from at.total (contest count).
+        const r = await scrapeAndSave(session, c, (completed, total) => { if (!aborted) send('progress', { ...at, completed, totalUsers: total }); });
+        ok++; send('contest-done', { ...at, users: r.users });
+      } catch (e) {
+        failures.push(`${c.college} / ${c.name}: ${e.message}`);
+        send('contest-failed', { ...at, error: e.message });
+      }
+    }
+    if (!aborted) send('done', { ok, total: contests.length, failures });
+    res.end();
+  } catch (e) { send('failed', { error: e.message }); res.end(); }
+});
+
 // Topic of a question: admin-assigned, else parsed from "Topic - Title".
 function titleTag(name) { const m = String(name).split(/\s+[–—-]\s+/); return m.length >= 2 ? m[0].trim() : ''; }
 function resolveTopic(saved, name) { return (saved && saved[name]) || titleTag(name) || 'Other'; }
@@ -378,22 +418,42 @@ app.post('/api/question-categories/:contestId', requireAdmin, async (req, res) =
 
 // Build per-student daily questions-completed from stored snapshots. Shared by
 // the admin Daily tab and the read-only shared view.
+// Calendar dates (UTC, matching how snapshots are bucketed) for the window
+// ending today: index 0 is (N-1) days ago, last is today.
+function lastNDates(n) {
+  const now = new Date(); const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    out.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i)).toISOString().slice(0, 10));
+  }
+  return out;
+}
 async function computeDaily(contest, N = 10) {
   const [series, roster] = await Promise.all([
     contest.slug ? cachedScrapeSeries(contest.slug) : [],
     db.listStudentsForContest(contest.id),
   ]);
-  const startIdx = Math.max(0, series.length - N);
-  const days = series.map((s) => s.day).slice(startIdx);
+  const days = lastNDates(N);                         // always the last N calendar days
+  const dayBefore = new Date(Date.parse(days[0] + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+
+  // Cumulative solved per snapshot day, carrying a student's last known count
+  // forward so a missing entry doesn't read as a drop to zero.
+  const resolved = []; let acc = {};
+  for (const s of series) { acc = Object.assign({}, acc, s.solved); resolved.push({ day: s.day, solved: acc }); }
+  // Latest snapshot on or before a given calendar date (null if none yet).
+  const mapAt = (day) => { let m = null; for (const r of resolved) { if (r.day <= day) m = r.solved; else break; } return m; };
+  const windowMaps = days.map(mapAt);
+  const beforeMap = mapAt(dayBefore);
+
   const students = roster.map((s) => {
     const key = (s.usernameKey || s.hrUsername || '').toLowerCase();
-    let prev = 0; const daily = [];
-    for (const snap of series) {
-      const cur = snap.solved[key] != null ? snap.solved[key] : prev; // carry forward if absent
-      daily.push(Math.max(0, cur - prev));
+    let prev = beforeMap && beforeMap[key] != null ? beforeMap[key] : 0; // baseline from before the window
+    const daily = windowMaps.map((m) => {
+      const cur = m && m[key] != null ? m[key] : prev; // no snapshot that day -> no change
+      const delta = Math.max(0, cur - prev);
       prev = cur;
-    }
-    return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, daily: daily.slice(startIdx), total: prev };
+      return delta;
+    });
+    return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, daily, total: prev };
   }).sort((a, b) => b.total - a.total);
   return { days, students };
 }
@@ -476,7 +536,7 @@ app.get('/api/shared/:token', async (req, res) => {
       contest.slug ? db.getQuestionCategories(contest.slug) : {},
     ]);
     const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
-    const daily = await computeDaily(contest, 30); // last 30 days for the shared Daily tab
+    const daily = await computeDaily(contest, 10); // last 10 calendar days
     res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -485,7 +545,7 @@ app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public
 app.get('/student', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'student.html')));
 // ---------------- Automatic sync (scheduled) ----------------
 const autoState = { lastRun: null, lastResult: null, running: false };
-async function scrapeAndSave(session, contest) {
+async function scrapeAndSave(session, contest, onProgress) {
   const slug = contest.slug;
   if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); invalidateScrapeCache(slug); return { slug, users: dash.summary.totalUsers }; }
   const { jar, csrfToken } = session;
@@ -495,7 +555,7 @@ async function scrapeAndSave(session, contest) {
   const { targets } = await resolveScrapeTargets(contest, leaderboard);
   if (!targets.length) throw new Error('no students mapped and no leaderboard entries');
   const reference = (leaderboard[0] && leaderboard[0].username) || targets[0];
-  const { contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8 });
+  const { contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8, onProgress });
   const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
   const dash = assembleDashboard({ slug, contest: c, leaderboard: entries, questions, userMap, reference });
   await db.saveScrape(slug, dash); invalidateScrapeCache(slug);

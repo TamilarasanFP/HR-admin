@@ -163,8 +163,9 @@ $('up-college').addEventListener('change', loadUploadContests);
 async function loadUploadContests() {
   const id = $('up-college').value;
   const sel = $('up-contest');
-  if (!id) { sel.innerHTML = `<option value="">(no college)</option>`; return; }
-  const contests = (await api('/api/contests?collegeId=' + id)).contests || [];
+  if (!id) { sel.innerHTML = `<option value="">(no college)</option>`; await loadStudentFacets(); return; }
+  const [contestsRes] = await Promise.all([api('/api/contests?collegeId=' + id), loadStudentFacets()]);
+  const contests = contestsRes.contests || [];
   sel.innerHTML = `<option value="">College only (no contest)</option>` + contests.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
 }
 function pickCol(h, kws, exclude = []) {
@@ -219,6 +220,7 @@ $('up-file').addEventListener('change', async (e) => {
     $('up-detected').innerHTML =
       `<div>Detected → <b>name:</b> ${lbl(h, col.name)} · <b>user:</b> ${lbl(h, col.user)} · <b>reg:</b> ${lbl(h, col.reg)} · <b>email:</b> ${lbl(h, col.email)} · <b>dept:</b> ${lbl(h, col.dept)} · <b>section:</b> ${lbl(h, col.section)} · <b>year:</b> ${lbl(h, col.year)}</div>` +
       `<div style="margin-top:4px">Your sheet's headers: ${h.map((x) => `<code>${esc(String(x))}</code>`).join(', ')}</div>` + issuesHtml;
+    clearDashCache(); // roster changed
     await loadColleges();
   } catch (err) { setStatus($('up-status'), err.message, 'err'); }
   finally { e.target.value = ''; }
@@ -227,6 +229,96 @@ const lbl = (h, i) => (i === -1 ? '—' : `"${h[i]}"`);
 $('up-template').addEventListener('click', () => {
   const ws = XLSX.utils.aoa_to_sheet([['Student Name', 'HackerRank Username', 'Register Number', 'Email ID', 'Department', 'Section', 'Year', 'Campus name']]);
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Roster'); XLSX.writeFile(wb, 'roster_template.xlsx');
+});
+
+// ---------- Manual entry (no Excel) ----------
+const cleanUsername = (v) => { v = String(v || '').trim(); if (!v) return ''; if (v.includes('/')) { const p = v.split('/').filter(Boolean); return p[p.length - 1]; } return v.replace(/^@/, ''); };
+
+// Department / Section / Year dropdowns, populated from the college's existing
+// students. "＋ New…" reveals a text box so new values aren't blocked.
+const FACET_FIELDS = [['one-dept', 'departments', 'department'], ['one-section', 'sections', 'section'], ['one-year', 'years', 'year']];
+async function loadStudentFacets() {
+  const sel = $('up-college'); const college = sel.options[sel.selectedIndex]?.textContent;
+  let facets = { departments: [], sections: [], years: [] };
+  if (college) { try { facets = await api('/api/student-facets?college=' + encodeURIComponent(college)); } catch { /* keep empty */ } }
+  for (const [id, key, label] of FACET_FIELDS) {
+    const el = $(id); const prev = el.value;
+    const opts = (facets[key] || []);
+    el.innerHTML = `<option value="">— ${label} —</option>` + opts.map((v) => `<option>${esc(v)}</option>`).join('') + `<option value="__new__">＋ New…</option>`;
+    if (prev && prev !== '__new__' && opts.includes(prev)) el.value = prev;
+    $(id + '-new').classList.add('hidden');
+  }
+}
+// Toggle the free-text box when "＋ New…" is picked.
+for (const [id] of FACET_FIELDS) {
+  $(id).addEventListener('change', () => {
+    const box = $(id + '-new');
+    if ($(id).value === '__new__') { box.classList.remove('hidden'); box.focus(); }
+    else { box.classList.add('hidden'); box.value = ''; }
+  });
+}
+// Value of a facet field: the typed text when "＋ New…" is active, else the picked option.
+const facetValue = (id) => ($(id).value === '__new__' ? $(id + '-new').value.trim() : $(id).value);
+// Shared submit for the single + bulk manual forms.
+async function submitStudents(students, statusEl) {
+  const sel = $('up-college'); const college = sel.options[sel.selectedIndex]?.textContent;
+  if (!college) { setStatus(statusEl, 'Pick a college above first.', 'err'); return null; }
+  if (!students.length) { setStatus(statusEl, 'Nothing to add.', 'err'); return null; }
+  const contestId = $('up-contest').value;
+  setStatus(statusEl, 'Saving…', 'info');
+  try {
+    const res = await api('/api/students/upload', { method: 'POST', body: { college, students, contestId: contestId || undefined } });
+    const ctName = contestId ? ($('up-contest').options[$('up-contest').selectedIndex]?.textContent) : '';
+    const warn = (res.warnings || []).join(' ');
+    setStatus(statusEl, `Saved ${res.count} of ${res.received ?? students.length} to ${college}${contestId ? ` and mapped ${res.assigned} to "${ctName}"` : ''}.${warn ? ' ⚠ ' + warn : ''}`, (res.warnings || []).length ? 'err' : 'ok');
+    clearDashCache(); // roster changed
+    await loadColleges();
+    return res;
+  } catch (err) { setStatus(statusEl, err.message, 'err'); return null; }
+}
+
+// Single student
+$('one-add').addEventListener('click', async () => {
+  const user = cleanUsername($('one-user').value);
+  const name = $('one-name').value.trim();
+  if (!user) return setStatus($('one-status'), 'HackerRank username is required.', 'err');
+  if (!name) return setStatus($('one-status'), 'Student name is required.', 'err');
+  const student = {
+    hrUsername: user, name,
+    registerNo: $('one-reg').value.trim(), email: $('one-email').value.trim(),
+    department: facetValue('one-dept'), section: facetValue('one-section'),
+    year: facetValue('one-year'), campus: '',
+  };
+  const res = await submitStudents([student], $('one-status'));
+  if (res) {
+    ['one-name', 'one-user', 'one-reg', 'one-email'].forEach((id) => { $(id).value = ''; }); // keep dept/section/year for the next entry
+    await loadStudentFacets(); // a newly typed dept/section/year now appears in the list
+  }
+});
+
+// Bulk paste — "Name, username, reg, email, dept, section, year" (commas or tabs)
+function parseBulk(text) {
+  const out = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim(); if (!line) continue;
+    const parts = line.split(/\t|,/).map((s) => s.trim());
+    let name = '', user = '', rest = [];
+    if (parts.length === 1) { user = cleanUsername(parts[0]); name = user; }
+    else { name = parts[0]; user = cleanUsername(parts[1]); rest = parts.slice(2); }
+    if (!user) continue;
+    out.push({ hrUsername: user, name: name || user, registerNo: rest[0] || '', email: rest[1] || '', department: rest[2] || '', section: rest[3] || '', year: rest[4] || '', campus: '' });
+  }
+  return out;
+}
+$('bulk-text').addEventListener('input', () => {
+  const n = parseBulk($('bulk-text').value).length;
+  $('bulk-count').textContent = n ? `${n} student${n > 1 ? 's' : ''} detected` : '';
+});
+$('bulk-add').addEventListener('click', async () => {
+  const students = parseBulk($('bulk-text').value);
+  if (!students.length) return setStatus($('bulk-status'), 'No valid lines found — each line needs at least a username.', 'err');
+  const res = await submitStudents(students, $('bulk-status'));
+  if (res) { $('bulk-text').value = ''; $('bulk-count').textContent = ''; }
 });
 
 // ---------- Connect HackerRank ----------
@@ -311,18 +403,12 @@ $('dash-savelink').addEventListener('click', async () => {
   catch (e) { setStatus($('dash-status'), e.message, 'err'); }
 });
 
-async function loadDashboard() {
-  solvedFilter = null;
-  studentsPage = 1;
-  showContestLink();
-  if (!selectedContestId) {
-    // Only when there's no contest do we need the whole-college roster.
-    roster = selectedCollegeId ? (await api('/api/students?college=' + encodeURIComponent(collegeName(selectedCollegeId)))).students || [] : [];
-    dashData = null; dashTopics = {}; fillFilters(); renderSummary(); renderTopicAnalysis(); renderStudents();
-    setStatus($('dash-status'), 'No contest yet — add one with ＋ Contest.', 'info'); return;
-  }
-  // The contest-dashboard call already returns this contest's students, so skip the redundant roster fetch.
-  const d = await api('/api/contest-dashboard/' + selectedContestId);
+// Browser-side cache of contest dashboards so switching back is instant.
+// Cleared for a contest whenever it's re-synced.
+const dashCache = new Map();
+function clearDashCache(contestId) { if (contestId == null) dashCache.clear(); else dashCache.delete(String(contestId)); }
+
+function applyDashboard(d) {
   dashData = d.dashboard;
   dashTopics = d.topics || {};
   dashCats = d.categories || {};
@@ -334,6 +420,55 @@ async function loadDashboard() {
   renderCategoryChart();
   renderStudents();
   setStatus($('dash-status'), dashData ? '' : `"${d.contest.name}" not synced yet. Connect HackerRank and Sync now.`, 'info');
+}
+
+async function loadDashboard() {
+  solvedFilter = null;
+  studentsPage = 1;
+  showContestLink();
+  if (!selectedContestId) {
+    // Only when there's no contest do we need the whole-college roster.
+    roster = selectedCollegeId ? (await api('/api/students?college=' + encodeURIComponent(collegeName(selectedCollegeId)))).students || [] : [];
+    dashData = null; dashTopics = {}; fillFilters(); renderSummary(); renderTopicAnalysis(); renderStudents();
+    setStatus($('dash-status'), 'No contest yet — add one with ＋ Contest.', 'info'); return;
+  }
+  const id = String(selectedContestId);
+  const cached = dashCache.get(id);
+  if (cached) {
+    applyDashboard(cached);                       // paint instantly from cache
+    revalidateDashboard(id);                      // then refresh quietly in the background
+    return;
+  }
+  setStatus($('dash-status'), 'Loading…', 'info');
+  // The contest-dashboard call already returns this contest's students, so skip the redundant roster fetch.
+  const d = await api('/api/contest-dashboard/' + id);
+  dashCache.set(id, d);
+  if (String(selectedContestId) !== id) return;   // user switched away while it loaded
+  applyDashboard(d);
+  prefetchSiblingContests();
+}
+
+// Refresh a cached dashboard in the background; re-render only if still shown.
+function revalidateDashboard(id) {
+  api('/api/contest-dashboard/' + id).then((d) => {
+    dashCache.set(id, d);
+    if (String(selectedContestId) === String(id)) applyDashboard(d);
+  }).catch(() => { /* keep showing cached data */ });
+}
+
+// Warm the cache for the other contests of the current college, one at a time
+// so we don't flood the network while the user is reading.
+let prefetching = false;
+async function prefetchSiblingContests() {
+  if (prefetching) return;
+  prefetching = true;
+  try {
+    for (const c of dashContests) {
+      const id = String(c.id);
+      if (dashCache.has(id) || id === String(selectedContestId)) continue;
+      try { dashCache.set(id, await api('/api/contest-dashboard/' + id)); } catch { /* ignore */ }
+    }
+  } finally { prefetching = false; }
 }
 
 const CAT_LABELS = { inclass: 'In-class', postclass: 'Post-class', challenges: 'Challenges' };
@@ -677,6 +812,20 @@ async function loadTopicVideos() {
   loadQuestionCategories();
 }
 const QCATS = [['', '—'], ['inclass', 'In-class'], ['postclass', 'Post-class'], ['challenges', 'Challenges']];
+
+// ---- Bulk-set category on every question in the loaded contest ----
+$('t-bulk-cat').innerHTML = QCATS.map(([v, l]) => `<option value="${v}">${v ? l : '— (clear)'}</option>`).join('');
+function bulkSetCategory(onlyBlank) {
+  const val = $('t-bulk-cat').value;
+  const sels = document.querySelectorAll('#topics-table .qcat-in');
+  if (!sels.length) return setStatus($('t-status'), 'No questions loaded — pick a synced contest first.', 'err');
+  let n = 0;
+  sels.forEach((sel) => { if (onlyBlank && sel.value) return; sel.value = val; n++; });
+  const label = (QCATS.find(([v]) => v === val) || ['', '—'])[1];
+  setStatus($('t-status'), `Set ${n} question${n === 1 ? '' : 's'} to "${val ? label : 'no category'}". Click Save topics to apply.`, 'ok');
+}
+$('t-bulk-apply').addEventListener('click', () => bulkSetCategory(false));
+$('t-bulk-apply-blank').addEventListener('click', () => bulkSetCategory(true));
 $('tv-save').addEventListener('click', async () => {
   if (!topicsContestId) return;
   const map = {};
@@ -703,6 +852,7 @@ $('t-save').addEventListener('click', async () => {
     const r = await api('/api/topics/' + topicsContestId, { method: 'POST', body: { map } });
     await api('/api/question-categories/' + topicsContestId, { method: 'POST', body: { map: catMap } });
     setStatus($('t-status'), `Saved ${r.count} topics and ${Object.keys(catMap).length} categories.`, 'ok');
+    clearDashCache(topicsContestId);
     loadTopicVideos(); if (String(topicsContestId) === String(selectedContestId)) loadDashboard();
   }
   catch (e) { setStatus($('t-status'), e.message, 'err'); }
@@ -784,9 +934,55 @@ function syncContest() {
   setStatus($('dash-status'), `Syncing ${ct.name}…`, 'info');
   const es = new EventSource('/api/scrape-stream?' + new URLSearchParams({ adminToken, hrToken, contestId: selectedContestId }));
   es.addEventListener('progress', (ev) => { const p = JSON.parse(ev.data); $('dash-prog-lab').textContent = p.phase === 'leaderboard' ? `Fetching leaderboard… ${p.completed}` : `${p.completed} / ${p.total} users`; $('dash-prog-fill').style.width = (p.total ? Math.round(p.completed / p.total * 100) : 8) + '%'; });
-  es.addEventListener('done', (ev) => { es.close(); $('sync-btn').disabled = false; $('dash-prog-fill').style.width = '100%'; const d = JSON.parse(ev.data); setStatus($('dash-status'), `Synced — ${d.summary.totalUsers} users, ${d.summary.totalQuestions} questions.`, 'ok'); loadDashboard(); });
+  es.addEventListener('done', (ev) => { es.close(); $('sync-btn').disabled = false; $('dash-prog-fill').style.width = '100%'; const d = JSON.parse(ev.data); setStatus($('dash-status'), `Synced — ${d.summary.totalUsers} users, ${d.summary.totalQuestions} questions.`, 'ok'); clearDashCache(selectedContestId); loadDashboard(); });
   es.addEventListener('failed', (ev) => { es.close(); $('sync-btn').disabled = false; $('dash-progress').classList.add('hidden'); setStatus($('dash-status'), JSON.parse(ev.data).error, 'err'); });
   es.onerror = () => { es.close(); $('sync-btn').disabled = false; };
+}
+
+// ---------- Sync ALL colleges / all contests ----------
+$('sync-all-btn').addEventListener('click', syncAll);
+function syncAll() {
+  if (!hrToken) { $('connect-modal').classList.remove('hidden'); return; }
+  if (!confirm('Scrape every contest in every college? This can take a long while.')) return;
+  const btns = ['sync-btn', 'sync-all-btn'];
+  btns.forEach((b) => { $(b).disabled = true; });
+  $('dash-progress').classList.remove('hidden'); $('dash-prog-lab').textContent = 'Starting…'; $('dash-prog-fill').style.width = '0%';
+  setStatus($('dash-status'), 'Syncing all colleges…', 'info');
+  const done = [];
+  const stop = () => { btns.forEach((b) => { $(b).disabled = false; }); };
+  const es = new EventSource('/api/sync-all-stream?' + new URLSearchParams({ adminToken, hrToken }));
+  es.addEventListener('start', (ev) => { const d = JSON.parse(ev.data); setStatus($('dash-status'), `Syncing ${d.total} contest(s) across all colleges…`, 'info'); });
+  es.addEventListener('contest', (ev) => {
+    const p = JSON.parse(ev.data);
+    $('dash-prog-lab').textContent = `(${p.index}/${p.total}) ${p.college} — ${p.name}: starting…`;
+    $('dash-prog-fill').style.width = Math.round(((p.index - 1) / p.total) * 100) + '%';
+  });
+  es.addEventListener('progress', (ev) => {
+    const p = JSON.parse(ev.data);
+    $('dash-prog-lab').textContent = `(${p.index}/${p.total}) ${p.college} — ${p.name}: ${p.completed}/${p.totalUsers} users`;
+    // Overall bar = contests finished + fraction of the current one.
+    const frac = p.totalUsers ? Math.min(1, p.completed / p.totalUsers) : 0;
+    $('dash-prog-fill').style.width = Math.round((((p.index - 1) + frac) / p.total) * 100) + '%';
+  });
+  es.addEventListener('contest-done', (ev) => {
+    const p = JSON.parse(ev.data); done.push(`${p.college} / ${p.name}: ${p.users} users`);
+    $('dash-prog-fill').style.width = Math.round((p.index / p.total) * 100) + '%';
+  });
+  es.addEventListener('contest-failed', (ev) => {
+    const p = JSON.parse(ev.data); done.push(`⚠ ${p.college} / ${p.name}: ${p.error}`);
+  });
+  es.addEventListener('done', (ev) => {
+    es.close(); stop(); $('dash-prog-fill').style.width = '100%';
+    const d = JSON.parse(ev.data);
+    const msg = `Synced ${d.ok} of ${d.total} contest(s).` + (d.failures.length ? ` ${d.failures.length} failed.` : '');
+    setStatus($('dash-status'), msg, d.failures.length ? 'err' : 'ok');
+    if (d.failures.length) $('dash-prog-lab').textContent = 'Failed: ' + d.failures.join(' · ');
+    else $('dash-prog-lab').textContent = 'All done.';
+    clearDashCache(); // every contest may have changed
+    loadDashboard();
+  });
+  es.addEventListener('failed', (ev) => { es.close(); stop(); $('dash-progress').classList.add('hidden'); setStatus($('dash-status'), JSON.parse(ev.data).error, 'err'); });
+  es.onerror = () => { es.close(); stop(); };
 }
 
 // ---------- Boot ----------

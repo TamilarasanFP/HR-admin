@@ -53,6 +53,7 @@
               <button id="share-btn" class="ghost sm">🔗 Share link</button>
               <button id="connect-btn" class="ghost sm">Connect HackerRank</button>
               <button id="sync-btn" class="sm">⟳ Sync now</button>
+              <button id="sync-all-btn" class="sm" title="Scrape every contest in every college">⟳⟳ Sync ALL colleges</button>
               <button id="autosync-btn" class="ghost sm">⟳ Run auto-sync (all)</button>
             </div>
           </div>
@@ -159,7 +160,7 @@
               <label class="inline-label">Contest: <select id="daily-contest"></select></label>
             </div>
           </div>
-          <p class="muted">Questions each student completed per day (from daily snapshots). The first day shown is a baseline, not a same-day count. Every student is listed, whether or not they rank on the leaderboard.</p>
+          <p class="muted">Questions each student completed per day over the <b>last 10 days</b>, ending today. Days with no sync show a dot (no change recorded). Every student is listed, whether or not they rank on the leaderboard.</p>
           <div class="table-scroll"><table id="daily-table" class="data-table"></table></div>
         </div>
       </section>
@@ -173,6 +174,9 @@
               <label class="inline-label">College: <select id="t-college"></select></label>
               <label class="inline-label">Contest: <select id="t-contest-sel"></select></label>
               <button id="t-autofill" class="ghost sm">Auto-fill from titles</button>
+              <label class="inline-label">Set category: <select id="t-bulk-cat"></select></label>
+              <button id="t-bulk-apply" class="ghost sm" title="Set this category on every question below">Apply to all</button>
+              <button id="t-bulk-apply-blank" class="ghost sm" title="Only fill questions that have no category yet">Fill blanks only</button>
               <button id="t-save">Save topics</button>
             </div>
           </div>
@@ -209,6 +213,41 @@
           </div>
           <div id="up-status" class="status"></div>
           <div id="up-detected" class="muted"></div>
+        </div>
+
+        <!-- Add one student manually -->
+        <div class="card">
+          <h3>Add a single student</h3>
+          <p class="muted">No file needed. Uses the <b>College</b> and <b>Map to contest</b> chosen above. Name and HackerRank username are required.</p>
+          <div class="form-row">
+            <input id="one-name" placeholder="Student name *" />
+            <input id="one-user" placeholder="HackerRank username or profile URL *" />
+            <input id="one-reg" placeholder="Register number" style="flex:0 0 150px" />
+          </div>
+          <div class="form-row">
+            <input id="one-email" placeholder="Email" />
+            <label class="inline-label">Dept: <select id="one-dept"></select></label>
+            <input id="one-dept-new" class="hidden" placeholder="New department" style="flex:0 0 150px" />
+            <label class="inline-label">Section: <select id="one-section"></select></label>
+            <input id="one-section-new" class="hidden" placeholder="New section" style="flex:0 0 110px" />
+            <label class="inline-label">Year: <select id="one-year"></select></label>
+            <input id="one-year-new" class="hidden" placeholder="New year" style="flex:0 0 90px" />
+            <button id="one-add" class="primary sm">Add student</button>
+          </div>
+          <div id="one-status" class="status"></div>
+        </div>
+
+        <!-- Add many students by pasting -->
+        <div class="card">
+          <h3>Add multiple students (paste)</h3>
+          <p class="muted">One student per line. Use <code>Name, username</code> — commas or tabs both work, so you can paste straight from a spreadsheet. A line with only a username is fine too (the username becomes the name). Optional extra columns, in order: <code>Name, username, register no, email, department, section, year</code>.</p>
+          <textarea id="bulk-text" rows="8" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem"
+            placeholder="Kavin A S, kavin_hr&#10;Kavipriya P, kavipriya22&#10;hema_t"></textarea>
+          <div class="form-row" style="margin-top:8px">
+            <button id="bulk-add" class="primary sm">Add students</button>
+            <span id="bulk-count" class="muted"></span>
+          </div>
+          <div id="bulk-status" class="status"></div>
         </div>
       </section>
     </main>
