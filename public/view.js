@@ -31,16 +31,17 @@ function joinedRows() {
     return { ...s, inContest: !!u, solved: u ? u.solved : 0, score: u ? u.computedScore : 0, totalQ, completion: u && totalQ ? Math.round((u.solved / totalQ) * 100) : 0 }; });
 }
 function fillFilters() {
-  for (const [id, key] of [['f-department', 'department'], ['f-section', 'section'], ['f-year', 'year']]) {
-    const sel = $(id); const vals = Array.from(new Set(roster.map((s) => s[key]).filter(Boolean))).sort();
-    sel.innerHTML = `<option value="">All ${key === 'department' ? 'departments' : key + 's'}</option>` + vals.map((v) => `<option>${esc(v)}</option>`).join('');
+  const labels = { department: 'departments', section: 'sections', year: 'years', campus: 'campuses' };
+  for (const [id, key] of [['f-campus', 'campus'], ['f-department', 'department'], ['f-section', 'section'], ['f-year', 'year']]) {
+    const sel = $(id); const vals = Array.from(new Set(roster.map((s) => s[key]).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+    sel.innerHTML = `<option value="">All ${labels[key]}</option>` + vals.map((v) => `<option>${esc(v)}</option>`).join('');
     sel.addEventListener('change', () => { studentsPage = 1; renderStudents(); });
   }
   $('f-search').addEventListener('input', () => { studentsPage = 1; renderStudents(); });
 }
 function filteredRows() {
-  const f = { department: $('f-department').value, section: $('f-section').value, year: $('f-year').value, q: $('f-search').value.trim().toLowerCase() };
-  return joinedRows().filter((r) => (!f.department || r.department === f.department) && (!f.section || r.section === f.section) && (!f.year || r.year === f.year) &&
+  const f = { campus: $('f-campus').value, department: $('f-department').value, section: $('f-section').value, year: $('f-year').value, q: $('f-search').value.trim().toLowerCase() };
+  return joinedRows().filter((r) => (!f.campus || r.campus === f.campus) && (!f.department || r.department === f.department) && (!f.section || r.section === f.section) && (!f.year || r.year === f.year) &&
     (!f.q || (r.name || '').toLowerCase().includes(f.q) || (r.hrUsername || '').toLowerCase().includes(f.q))).sort((a, b) => b.solved - a.solved || b.score - a.score);
 }
 function renderSummary() {
@@ -71,13 +72,14 @@ function renderTopicAnalysis() {
   if (!participants.length) { card.classList.add('hidden'); return; }
   const topicQs = new Map();
   for (const q of dashData.questions) { const t = dashTopics[q.name] || splitTitle(q.name).tag || 'Other'; if (!topicQs.has(t)) topicQs.set(t, []); topicQs.get(t).push(q.name); }
+  // Keep topics in the order questions appear in the contest (same as the Topics tab).
   const rows = Array.from(topicQs.entries()).map(([topic, qs]) => {
     let solved = 0; for (const u of participants) for (const qn of qs) if (u.questionStatus[qn]?.solved) solved++;
     const denom = participants.length * qs.length;
     return { topic, questions: qs.length, solveRate: denom ? Math.round((solved / denom) * 100) : 0, avgSolved: +(solved / participants.length).toFixed(2) };
-  }).sort((a, b) => b.solveRate - a.solveRate);
+  });
   taRows = rows;
-  const weakest = rows[rows.length - 1];
+  const weakest = rows.reduce((a, b) => (b.solveRate < a.solveRate ? b : a), rows[0]);
   $('ta-note').textContent = `· ${participants.length} participants · ${rows.length} topics · weakest: ${weakest.topic} (${weakest.solveRate}%)`;
   $('ta-chart').innerHTML = topicChartSVG(rows);
   $('topic-analysis-table').innerHTML =
@@ -156,7 +158,7 @@ function renderTcPage() {
   $('tc-filter-' + (tcFilter === 'done' ? 'done' : tcFilter === 'not' ? 'not' : 'all')).classList.add('active-filter');
   $('tc-modal-table').innerHTML =
     `<thead><tr><th>#</th><th>Student</th><th>HR username</th><th>Dept</th><th>Section</th><th class="num">Solved</th><th>Status</th></tr></thead><tbody>` +
-    (slice.length ? slice.map((r, i) => `<tr><td class="num">${start + i + 1}</td><td>${esc(r.name)}</td><td>${esc(r.hrUsername)}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td><td class="num">${r.solved}/${r.total}</td><td><span class="badge ${r.completed ? 'solved' : 'attempted'}">${r.completed ? 'Completed' : 'Not completed'}</span></td></tr>`).join('')
+    (slice.length ? slice.map((r, i) => `<tr><td class="num">${start + i + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name)}</a></td><td>${esc(r.hrUsername)}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td><td class="num">${r.solved}/${r.total}</td><td><span class="badge ${r.completed ? 'solved' : 'attempted'}">${r.completed ? 'Completed' : 'Not completed'}</span></td></tr>`).join('')
       : `<tr><td colspan="7" class="muted">None.</td></tr>`) + `</tbody>`;
   const from = all.length ? start + 1 : 0;
   $('tc-pager').innerHTML = all.length > TC_PAGE ? `<button class="ghost sm" id="tc-prev" ${tcPage <= 1 ? 'disabled' : ''}>‹ Prev</button><span class="muted">${from}–${Math.min(start + TC_PAGE, all.length)} of ${all.length} · page ${tcPage}/${pages}</span><button class="ghost sm" id="tc-next" ${tcPage >= pages ? 'disabled' : ''}>Next ›</button>` : '';
@@ -167,36 +169,67 @@ $('tc-filter-done').addEventListener('click', () => { tcFilter = 'done'; tcPage 
 $('tc-filter-not').addEventListener('click', () => { tcFilter = 'not'; tcPage = 1; renderTcPage(); });
 $('tc-modal-close').addEventListener('click', () => $('tc-modal').classList.add('hidden'));
 $('tc-modal').addEventListener('click', (e) => { if (e.target.id === 'tc-modal') $('tc-modal').classList.add('hidden'); });
+$('tc-modal-table').addEventListener('click', (e) => { const l = e.target.closest('.user-link[data-user]'); if (l) { e.preventDefault(); $('tc-modal').classList.add('hidden'); openPerf(l.dataset.user); } });
 
 // ---- Completion breakdown ----
+function completionBands(totalQ, step = 10) {
+  const bands = [{ label: '0', lo: 0, hi: 0 }];
+  for (let lo = 1; lo <= totalQ; lo += step) { const hi = Math.min(lo + step - 1, totalQ); bands.push({ label: lo === hi ? `${lo}` : `${lo}–${hi}`, lo, hi }); }
+  return bands;
+}
+function defaultBandSize(totalQ) { return totalQ > 150 ? 20 : totalQ > 100 ? 15 : 10; }
+let cbLastTotalQ = null;
+$('cb-band-size').addEventListener('change', renderCompletion);
 function renderCompletion() {
   const card = $('completion-card'); const rows = joinedRows();
   if (!rows.length) { card.classList.add('hidden'); return; }
   const totalQ = dashData.summary.totalQuestions;
-  const dist = Array.from({ length: totalQ + 1 }, () => 0);
-  for (const r of rows) dist[r.solved] = (dist[r.solved] || 0) + 1;
-  const total = rows.length, maxCount = Math.max(...dist, 1);
+  const total = rows.length;
+  if (cbLastTotalQ !== totalQ) { $('cb-band-size').value = String(defaultBandSize(totalQ)); cbLastTotalQ = totalQ; }
+  const step = parseInt($('cb-band-size').value, 10) || 10;
+  const bands = completionBands(totalQ, step).map((b) => ({ ...b, count: rows.filter((r) => r.solved >= b.lo && r.solved <= b.hi).length }));
   $('cb-note').textContent = `· ${total} students`;
-  $('completion-table').innerHTML =
-    `<thead><tr><th>Questions solved</th><th class="num">Students</th><th class="num">%</th><th>Distribution</th></tr></thead><tbody>` +
-    dist.map((count, k) => `<tr class="cb-row" data-solved="${k}" style="cursor:pointer"><td>${k} / ${totalQ}${k === totalQ ? ' (all)' : k === 0 ? ' (none)' : ''}</td><td class="num">${count}</td><td class="num">${total ? Math.round((count / total) * 100) : 0}%</td><td><div class="bar" style="display:inline-block;width:160px;vertical-align:middle"><span style="width:${Math.round((count / maxCount) * 100)}%"></span></div></td></tr>`).join('') +
-    `</tbody>`;
+  $('completion-chart').innerHTML = completionBarSVG(bands, total);
   $('completion-pager').innerHTML = '';
   card.classList.remove('hidden');
 }
-$('completion-table').addEventListener('click', (e) => { const row = e.target.closest('.cb-row[data-solved]'); if (row) openCompletionNames(Number(row.dataset.solved)); });
-function openCompletionNames(k) {
+function completionBarSVG(bands, total) {
+  const W = 640, H = 260, padL = 40, padB = 46, padT = 14, padR = 10;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = bands.length, gap = 8;
+  const bw = Math.max(6, (plotW - gap * (n - 1)) / n);
+  const maxCount = Math.max(...bands.map((b) => b.count), 1);
+  let s = `<svg viewBox="0 0 ${W} ${H}" style="font-family:inherit;display:inline-block;width:100%;max-width:${W}px;max-height:${H}px">`;
+  for (let g = 0; g <= 4; g++) {
+    const y = padT + plotH - (plotH * g) / 4;
+    s += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--border)" stroke-width="1"/>`;
+    s += `<text x="${padL - 6}" y="${y + 4}" text-anchor="end" fill="var(--muted)" font-size="11">${Math.round((maxCount * g) / 4)}</text>`;
+  }
+  bands.forEach((b, i) => {
+    const x = padL + i * (bw + gap);
+    const h = Math.round((plotH * b.count) / maxCount);
+    const y = padT + plotH - h;
+    const pct = total ? Math.round((b.count / total) * 100) : 0;
+    s += `<rect class="cb-bar" data-lo="${b.lo}" data-hi="${b.hi}" data-label="${esc(b.label)}" x="${x}" y="${y}" width="${bw}" height="${Math.max(0, h)}" rx="3" fill="var(--accent)" style="cursor:pointer"><title>${esc(b.label)}: ${b.count} students (${pct}%)</title></rect>`;
+    if (b.count) s += `<text x="${x + bw / 2}" y="${y - 4}" text-anchor="middle" fill="var(--text)" font-size="11" style="pointer-events:none">${b.count}</text>`;
+    s += `<text x="${x + bw / 2}" y="${H - padB + 16}" text-anchor="middle" fill="var(--muted)" font-size="11" style="pointer-events:none">${esc(b.label)}</text>`;
+  });
+  s += `<text x="${padL}" y="${H - 6}" fill="var(--muted)" font-size="11">Questions solved →</text>`;
+  return s + `</svg>`;
+}
+$('completion-chart').addEventListener('click', (e) => { const bar = e.target.closest('.cb-bar[data-lo]'); if (bar) openCompletionNames(Number(bar.dataset.lo), Number(bar.dataset.hi), bar.dataset.label); });
+function openCompletionNames(lo, hi, label) {
   const totalQ = dashData.summary.totalQuestions;
-  cbRows = joinedRows().filter((r) => r.solved === k).sort((a, b) => b.score - a.score); cbPage = 1;
-  $('cb-modal-title').textContent = `${cbRows.length} student(s) solved ${k} / ${totalQ}`;
+  cbRows = joinedRows().filter((r) => r.solved >= lo && r.solved <= hi).sort((a, b) => b.solved - a.solved || b.score - a.score); cbPage = 1;
+  $('cb-modal-title').textContent = `${cbRows.length} student(s) solved ${lo === hi ? lo : (label || lo + '–' + hi)} / ${totalQ}`;
   renderCbPage(); $('cb-modal').classList.remove('hidden');
 }
 function renderCbPage() {
   const total = cbRows.length; const pages = Math.max(1, Math.ceil(total / CB_PAGE));
   if (cbPage > pages) cbPage = pages;
   const start = (cbPage - 1) * CB_PAGE, slice = cbRows.slice(start, start + CB_PAGE);
-  $('cb-modal-table').innerHTML = `<thead><tr><th>#</th><th>Student</th><th>HR username</th><th>Dept</th><th>Section</th><th class="num">Score</th></tr></thead><tbody>` +
-    (slice.length ? slice.map((r, idx) => `<tr><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername)}</a></td><td>${esc(r.hrUsername)}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td><td class="num">${r.score}</td></tr>`).join('') : `<tr><td colspan="6" class="muted">No students.</td></tr>`) + `</tbody>`;
+  $('cb-modal-table').innerHTML = `<thead><tr><th>#</th><th>Student</th><th>HR username</th><th>Dept</th><th>Section</th><th class="num">Solved</th><th class="num">Score</th></tr></thead><tbody>` +
+    (slice.length ? slice.map((r, idx) => `<tr><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername)}</a></td><td>${esc(r.hrUsername)}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td><td class="num">${r.solved}</td><td class="num">${r.score}</td></tr>`).join('') : `<tr><td colspan="7" class="muted">No students.</td></tr>`) + `</tbody>`;
   const from = total ? start + 1 : 0;
   $('cb-pager').innerHTML = total > CB_PAGE ? `<button class="ghost sm" id="cb-prev" ${cbPage <= 1 ? 'disabled' : ''}>‹ Prev</button><span class="muted">${from}–${Math.min(start + CB_PAGE, total)} of ${total} · page ${cbPage}/${pages}</span><button class="ghost sm" id="cb-next" ${cbPage >= pages ? 'disabled' : ''}>Next ›</button>` : '';
   if (total > CB_PAGE) { $('cb-prev').addEventListener('click', () => { if (cbPage > 1) { cbPage--; renderCbPage(); } }); $('cb-next').addEventListener('click', () => { if (cbPage < pages) { cbPage++; renderCbPage(); } }); }
@@ -235,12 +268,27 @@ function openPerf(hrUsername) {
     .map(([l, v]) => `<div class="stat"><div class="value">${v}</div><div class="label">${l}</div></div>`).join('');
   const tm = new Map();
   for (const q of dashData.questions) { const t = dashTopics[q.name] || splitTitle(q.name).tag || 'Other'; if (!tm.has(t)) tm.set(t, { total: 0, solved: 0 }); const e = tm.get(t); e.total++; if (u.questionStatus[q.name]?.solved) e.solved++; }
-  $('perf-topics').innerHTML = `<div class="muted" style="margin-bottom:6px">By topic</div>` + Array.from(tm.entries()).map(([t, e]) => { const cls = e.solved === e.total ? 'solved' : e.solved > 0 ? 'attempted' : 'none'; return `<span class="topic-tag"><b>${esc(t)}</b> <span class="badge ${cls}">${e.solved}/${e.total}</span></span>`; }).join('');
-  const qrows = dashData.questions.map((q) => ({ q, st: u.questionStatus[q.name] || { score: 0, points: q.points, solved: false, attempted: false } }));
-  $('perf-table').innerHTML = `<thead><tr><th>#</th><th>Question</th><th>Status</th><th class="num">Score</th></tr></thead><tbody>` +
-    qrows.map(({ q, st }, i) => { const cls = st.solved ? 'solved' : st.attempted ? 'attempted' : 'none'; const txt = st.solved ? 'Solved' : st.attempted ? 'Attempted' : 'Not attempted'; const url = questionUrl(q); const name = url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(q.name)}</a>` : esc(q.name); return `<tr><td class="num">${i + 1}</td><td>${name}</td><td><span class="badge ${cls}">${txt}</span></td><td class="num">${st.score || 0} / ${q.points}</td></tr>`; }).join('') + `</tbody>`;
+  $('perf-topics').innerHTML = `<div class="muted" style="margin-bottom:6px">By topic <span style="font-size:11px">(click a topic to filter the questions below)</span></div>` + Array.from(tm.entries()).map(([t, e]) => { const cls = e.solved === e.total ? 'solved' : e.solved > 0 ? 'attempted' : 'none'; return `<span class="topic-tag" data-topic="${esc(t)}" style="cursor:pointer"><b>${esc(t)}</b> <span class="badge ${cls}">${e.solved}/${e.total}</span></span>`; }).join('');
+  perfState = { u };
+  perfTopicFilter = null;
+  renderPerfTable();
   $('perf-modal').classList.remove('hidden');
 }
+let perfState = null, perfTopicFilter = null;
+const perfTopicOf = (q) => dashTopics[q.name] || splitTitle(q.name).tag || 'Other';
+function renderPerfTable() {
+  if (!perfState) return;
+  const u = perfState.u;
+  const qrows = dashData.questions.filter((q) => !perfTopicFilter || perfTopicOf(q) === perfTopicFilter).map((q) => ({ q, st: u.questionStatus[q.name] || { score: 0, points: q.points, solved: false, attempted: false } }));
+  $('perf-table').innerHTML = `<thead><tr><th>#</th><th>Question</th><th>Status</th><th class="num">Score</th></tr></thead><tbody>` +
+    qrows.map(({ q, st }, i) => { const cls = st.solved ? 'solved' : st.attempted ? 'attempted' : 'none'; const txt = st.solved ? 'Solved' : st.attempted ? 'Attempted' : 'Not attempted'; const url = questionUrl(q); const name = url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(q.name)}</a>` : esc(q.name); return `<tr><td class="num">${i + 1}</td><td>${name}</td><td><span class="badge ${cls}">${txt}</span></td><td class="num">${st.score || 0} / ${q.points}</td></tr>`; }).join('') + `</tbody>`;
+  document.querySelectorAll('#perf-topics .topic-tag').forEach((el) => el.classList.toggle('active-filter', el.dataset.topic === perfTopicFilter));
+}
+$('perf-topics').addEventListener('click', (e) => {
+  const tag = e.target.closest('.topic-tag[data-topic]'); if (!tag) return;
+  perfTopicFilter = perfTopicFilter === tag.dataset.topic ? null : tag.dataset.topic;
+  renderPerfTable();
+});
 
 // ---- Tabs (Dashboard / Daily) ----
 document.querySelectorAll('#view-tabs .tab').forEach((b) => b.addEventListener('click', () => {

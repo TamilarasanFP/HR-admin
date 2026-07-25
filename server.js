@@ -535,7 +535,7 @@ app.get('/api/shared/:token', async (req, res) => {
       contest.slug ? db.getTopicVideos(contest.slug) : {},
       contest.slug ? db.getQuestionCategories(contest.slug) : {},
     ]);
-    const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, registerNo: s.registerNo }));
+    const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, campus: s.campus, registerNo: s.registerNo }));
     const daily = await computeDaily(contest, 10); // last 10 calendar days
     res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily });
   } catch (e) { res.status(500).json({ error: e.message }); }
