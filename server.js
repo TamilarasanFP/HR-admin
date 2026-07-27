@@ -167,35 +167,57 @@ app.post('/api/students/upload', requireAdmin, async (req, res) => {
     if (!college || !Array.isArray(students)) return res.status(400).json({ error: 'Expected { college, students: [...] }.' });
 
     const warnings = [];
-    const skipped = [];          // rows dropped: no/placeholder username
-    const seen = new Map();      // username_key -> first student name (dup detection)
-    const duplicates = [];       // rows collapsed because username repeats
-    const clean = [];
+    const unmatched = [];         // rows with no valid HackerRank id — kept, listed at the end
+    const duplicates = [];        // rows collapsed because the key repeats in this file
+    const seen = new Map();       // username_key -> first student name (dup detection)
+    const prepared = [];          // final rows with an explicit usernameKey
+
+    // Stable synthetic key for a student with no usable HackerRank id, so the
+    // row is preserved (not dropped, not collapsed) and re-uploads stay idempotent.
+    const synthKey = (s, rowNo) => 'unmatched:' + String(s.registerNo || s.email || s.name || ('row' + rowNo)).trim().toLowerCase();
 
     students.forEach((s, i) => {
       const rowNo = i + 2; // +1 header, +1 to 1-index
       const raw = String(s.hrUsername || '').trim();
-      const key = raw.toLowerCase();
-      const label = s.name ? `"${s.name}"` : `row ${rowNo}`;
-      if (!raw) { skipped.push({ row: rowNo, name: s.name || '', username: raw, reason: 'missing username' }); return; }
-      if (PLACEHOLDER_USERNAMES.has(key)) { skipped.push({ row: rowNo, name: s.name || '', username: raw, reason: 'placeholder username' }); return; }
-      if (seen.has(key)) { duplicates.push({ row: rowNo, name: s.name || '', username: raw, firstSeen: seen.get(key) }); }
-      else seen.set(key, s.name || label);
-      clean.push(s);
+      const lc = raw.toLowerCase();
+      const valid = raw && !PLACEHOLDER_USERNAMES.has(lc);
+      // Valid HR id -> key = the username; otherwise a synthetic key, HR id cleared.
+      const usernameKey = valid ? lc : synthKey(s, rowNo);
+      const rec = { ...s, hrUsername: valid ? raw : '', usernameKey };
+      if (!valid) unmatched.push({ row: rowNo, name: s.name || '', username: raw });
+      if (seen.has(usernameKey)) { duplicates.push({ row: rowNo, name: s.name || '', key: usernameKey, firstSeen: seen.get(usernameKey) }); }
+      else seen.set(usernameKey, s.name || `row ${rowNo}`);
+      prepared.push(rec);
     });
 
-    if (skipped.length) {
-      const byReason = skipped.reduce((m, x) => ((m[x.reason] = (m[x.reason] || 0) + 1), m), {});
-      warnings.push(`Skipped ${skipped.length} row(s): ` + Object.entries(byReason).map(([k, v]) => `${v} with ${k}`).join(', ') + '.');
+    if (unmatched.length) {
+      warnings.push(`${unmatched.length} student(s) had no valid HackerRank id — kept and shown at the end as “no HR id”.`);
     }
     if (duplicates.length) {
-      warnings.push(`${duplicates.length} row(s) had a HackerRank username already used by another student in this file — only the last of each was kept.`);
+      warnings.push(`${duplicates.length} row(s) collapsed onto an earlier student (same id / same identifying details) — the last of each was kept.`);
     }
 
-    const r = await db.upsertStudents(college, clean);
+    // Reconcile by register number: if an incoming student's register number
+    // already exists under a DIFFERENT key (e.g. previously saved with no HR id,
+    // now re-uploaded with the correct username), update that same person and
+    // drop the stale row instead of creating a duplicate.
+    let merged = 0;
+    const existing = await db.listStudents({ college });
+    const byReg = new Map();
+    for (const e of existing) { const rn = String(e.registerNo || '').trim().toLowerCase(); if (rn) byReg.set(rn, e); }
+    const staleIds = [];
+    for (const s of prepared) {
+      const rn = String(s.registerNo || '').trim().toLowerCase(); if (!rn) continue;
+      const ex = byReg.get(rn);
+      if (ex && String(ex.usernameKey || '').toLowerCase() !== s.usernameKey) { staleIds.push(ex.id); merged++; }
+    }
+
+    const r = await db.upsertStudents(college, prepared);
+    if (staleIds.length) await db.deleteStudents(staleIds);
     let assigned = 0;
-    if (contestId) assigned = await db.assignStudentsToContest(contestId, clean.map((s) => String(s.hrUsername || '').toLowerCase()).filter(Boolean));
-    res.json({ ok: true, ...r, assigned, received: students.length, skipped, duplicates, warnings });
+    if (contestId) assigned = await db.assignStudentsToContest(contestId, prepared.map((s) => s.usernameKey));
+    if (merged) warnings.push(`${merged} student(s) matched an existing record by register number and were updated (e.g. a corrected HackerRank id) — no duplicate created.`);
+    res.json({ ok: true, ...r, assigned, received: students.length, unmatched, duplicates, merged, warnings });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 app.delete('/api/students', requireAdmin, async (req, res) => {

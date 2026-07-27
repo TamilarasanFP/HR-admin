@@ -209,13 +209,13 @@ $('up-file').addEventListener('change', async (e) => {
     const nameWarn = col.name === -1 ? ' ⚠ No NAME column detected — names will show as usernames. Check your header row.' : '';
     const hasIssues = (res.warnings && res.warnings.length) || col.name === -1;
     setStatus($('up-status'), `Saved ${res.count} of ${res.received ?? students.length} rows to ${college}${contestId ? ` and mapped ${res.assigned} to "${ctName}"` : ''}.${nameWarn}`, hasIssues ? 'err' : 'ok');
-    // Build a details panel including skipped/duplicate warnings.
+    // Build a details panel including unmatched/duplicate notices.
     let issuesHtml = '';
     if (res.warnings && res.warnings.length) {
       issuesHtml += `<div style="margin-top:6px;color:#c0392b"><b>⚠ ${res.warnings.length === 1 ? 'Notice' : 'Notices'}:</b><ul style="margin:4px 0 0 18px">` +
         res.warnings.map((w) => `<li>${esc(w)}</li>`).join('') + `</ul></div>`;
-      const sample = (res.skipped || []).slice(0, 8).map((x) => `${esc(x.name || '(no name)')} → <code>${esc(x.username || '')}</code> (${esc(x.reason)})`).join('; ');
-      if (sample) issuesHtml += `<div style="margin-top:4px;font-size:12px;color:#888">Examples: ${sample}${(res.skipped || []).length > 8 ? ' …' : ''}</div>`;
+      const sample = (res.unmatched || []).slice(0, 8).map((x) => `${esc(x.name || '(no name)')}${x.username ? ' → <code>' + esc(x.username) + '</code>' : ''}`).join('; ');
+      if (sample) issuesHtml += `<div style="margin-top:4px;font-size:12px;color:#888">No HR id: ${sample}${(res.unmatched || []).length > 8 ? ' …' : ''}</div>`;
     }
     $('up-detected').innerHTML =
       `<div>Detected → <b>name:</b> ${lbl(h, col.name)} · <b>user:</b> ${lbl(h, col.user)} · <b>reg:</b> ${lbl(h, col.reg)} · <b>email:</b> ${lbl(h, col.email)} · <b>dept:</b> ${lbl(h, col.dept)} · <b>section:</b> ${lbl(h, col.section)} · <b>year:</b> ${lbl(h, col.year)}</div>` +
@@ -728,16 +728,18 @@ function renderSummary() {
 function joinedRows() {
   const byUser = new Map((dashData?.users || []).map((u) => [u.username.toLowerCase(), u]));
   return roster.map((s) => {
-    const u = byUser.get(s.hrUsername.toLowerCase());
+    const hasHrId = !!(s.hrUsername && String(s.hrUsername).trim());
+    const u = hasHrId ? byUser.get(s.hrUsername.toLowerCase()) : null;
     const totalQ = dashData?.summary.totalQuestions || 0;
-    return { ...s, inContest: !!u, solved: u ? u.solved : 0, score: u ? u.computedScore : 0, totalQ, completion: u && totalQ ? Math.round((u.solved / totalQ) * 100) : 0 };
+    return { ...s, hasHrId, inContest: !!u, solved: u ? u.solved : 0, score: u ? u.computedScore : 0, totalQ, completion: u && totalQ ? Math.round((u.solved / totalQ) * 100) : 0 };
   });
 }
 function filteredRows() {
   const f = { campus: $('f-campus').value, department: $('f-department').value, section: $('f-section').value, year: $('f-year').value, q: $('f-search').value.trim().toLowerCase() };
   return joinedRows().filter((r) => (!f.campus || r.campus === f.campus) && (!f.department || r.department === f.department) && (!f.section || r.section === f.section) && (!f.year || r.year === f.year) &&
     (!f.q || (r.name || '').toLowerCase().includes(f.q) || (r.hrUsername || '').toLowerCase().includes(f.q)))
-    .sort((a, b) => b.solved - a.solved || b.score - a.score);
+    // Students with no HackerRank id always sink to the very end.
+    .sort((a, b) => (a.hasHrId === b.hasHrId ? 0 : a.hasHrId ? -1 : 1) || b.solved - a.solved || b.score - a.score);
 }
 function renderStudents() {
   const all = filteredRows();
@@ -750,7 +752,7 @@ function renderStudents() {
     `<thead><tr><th><input type="checkbox" id="sel-all"/></th><th>#</th><th>Student</th><th>HR username</th><th>Dept</th><th>Section</th>` +
     (hasScrape ? `<th class="num">Solved</th><th class="num">Score</th><th>Completion</th>` : '') + `</tr></thead><tbody>` +
     (rows.length ? rows.map((r, idx) =>
-      `<tr><td><input type="checkbox" class="sel" value="${r.id}"/></td><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername)}</a></td><td>${esc(r.hrUsername)}${r.inContest ? '' : ' <span class="muted">·absent</span>'}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td>` +
+      `<tr><td><input type="checkbox" class="sel" value="${r.id}"/></td><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername || '(unnamed)')}</a></td><td>${r.hasHrId ? esc(r.hrUsername) + (r.inContest ? '' : ' <span class="muted">·absent</span>') : '<span class="badge warn">no HR id</span>'}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td>` +
       (hasScrape ? `<td class="num">${r.solved}/${r.totalQ}</td><td class="num">${r.score}</td><td><div class="bar"><span style="width:${r.completion}%"></span></div></td>` : '') + `</tr>`).join('')
       : `<tr><td colspan="9" class="muted">No students. Upload a roster (Upload tab).</td></tr>`) + `</tbody>`;
   const selAll = $('sel-all'); if (selAll) selAll.addEventListener('change', () => document.querySelectorAll('#students-table .sel').forEach((c) => (c.checked = selAll.checked)));

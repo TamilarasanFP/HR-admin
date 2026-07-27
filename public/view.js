@@ -27,8 +27,8 @@ async function boot() {
 
 function joinedRows() {
   const byUser = new Map((dashData?.users || []).map((u) => [u.username.toLowerCase(), u]));
-  return roster.map((s) => { const u = byUser.get(s.hrUsername.toLowerCase()); const totalQ = dashData?.summary.totalQuestions || 0;
-    return { ...s, inContest: !!u, solved: u ? u.solved : 0, score: u ? u.computedScore : 0, totalQ, completion: u && totalQ ? Math.round((u.solved / totalQ) * 100) : 0 }; });
+  return roster.map((s) => { const hasHrId = !!(s.hrUsername && String(s.hrUsername).trim()); const u = hasHrId ? byUser.get(s.hrUsername.toLowerCase()) : null; const totalQ = dashData?.summary.totalQuestions || 0;
+    return { ...s, hasHrId, inContest: !!u, solved: u ? u.solved : 0, score: u ? u.computedScore : 0, totalQ, completion: u && totalQ ? Math.round((u.solved / totalQ) * 100) : 0 }; });
 }
 function fillFilters() {
   const labels = { department: 'departments', section: 'sections', year: 'years', campus: 'campuses' };
@@ -42,7 +42,7 @@ function fillFilters() {
 function filteredRows() {
   const f = { campus: $('f-campus').value, department: $('f-department').value, section: $('f-section').value, year: $('f-year').value, q: $('f-search').value.trim().toLowerCase() };
   return joinedRows().filter((r) => (!f.campus || r.campus === f.campus) && (!f.department || r.department === f.department) && (!f.section || r.section === f.section) && (!f.year || r.year === f.year) &&
-    (!f.q || (r.name || '').toLowerCase().includes(f.q) || (r.hrUsername || '').toLowerCase().includes(f.q))).sort((a, b) => b.solved - a.solved || b.score - a.score);
+    (!f.q || (r.name || '').toLowerCase().includes(f.q) || (r.hrUsername || '').toLowerCase().includes(f.q))).sort((a, b) => (a.hasHrId === b.hasHrId ? 0 : a.hasHrId ? -1 : 1) || b.solved - a.solved || b.score - a.score);
 }
 function renderSummary() {
   const sm = $('summary'); sm.classList.remove('hidden');
@@ -245,7 +245,7 @@ function renderStudents() {
   const start = (studentsPage - 1) * STUDENTS_PAGE, rows = all.slice(start, start + STUDENTS_PAGE);
   $('students-table').innerHTML =
     `<thead><tr><th>#</th><th>Student</th><th>HR username</th><th>Dept</th><th>Section</th><th class="num">Solved</th><th class="num">Score</th><th>Completion</th></tr></thead><tbody>` +
-    (rows.length ? rows.map((r, idx) => `<tr><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername)}</a></td><td>${esc(r.hrUsername)}${r.inContest ? '' : ' <span class="muted">·absent</span>'}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td><td class="num">${r.solved}/${r.totalQ}</td><td class="num">${r.score}</td><td><div class="bar"><span style="width:${r.completion}%"></span></div></td></tr>`).join('') : `<tr><td colspan="8" class="muted">No students.</td></tr>`) + `</tbody>`;
+    (rows.length ? rows.map((r, idx) => `<tr><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername || '(unnamed)')}</a></td><td>${r.hasHrId ? esc(r.hrUsername) + (r.inContest ? '' : ' <span class="muted">·absent</span>') : '<span class="badge warn">no HR id</span>'}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td><td class="num">${r.solved}/${r.totalQ}</td><td class="num">${r.score}</td><td><div class="bar"><span style="width:${r.completion}%"></span></div></td></tr>`).join('') : `<tr><td colspan="8" class="muted">No students.</td></tr>`) + `</tbody>`;
   const from = all.length ? start + 1 : 0;
   $('students-pager').innerHTML = all.length > STUDENTS_PAGE ? `<button class="ghost sm" id="st-prev" ${studentsPage <= 1 ? 'disabled' : ''}>‹ Prev</button><span class="muted">${from}–${Math.min(start + STUDENTS_PAGE, all.length)} of ${all.length} · page ${studentsPage}/${pages}</span><button class="ghost sm" id="st-next" ${studentsPage >= pages ? 'disabled' : ''}>Next ›</button>` : '';
   if (all.length > STUDENTS_PAGE) { $('st-prev').addEventListener('click', () => { if (studentsPage > 1) { studentsPage--; renderStudents(); } }); $('st-next').addEventListener('click', () => { if (studentsPage < pages) { studentsPage++; renderStudents(); } }); }

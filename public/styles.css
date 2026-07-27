@@ -71,6 +71,7 @@ button.ghost.danger{background:transparent;color:var(--danger);border-color:rgba
 .badge.solved{background:rgba(46,164,79,.16);color:var(--solved)}
 .badge.attempted{background:rgba(210,153,34,.16);color:var(--attempted)}
 .badge.none{background:rgba(139,151,167,.14);color:var(--muted)}
+.badge.warn{background:rgba(207,34,46,.14);color:var(--danger)}
 .solve-link{display:inline-block;background:var(--accent);color:#fff;padding:4px 12px;border-radius:6px;font-size:.78rem;font-weight:600;text-decoration:none}
 .solve-link.review{background:transparent;color:var(--muted);border:1px solid var(--border)}
 tr.row-todo td{background:rgba(31,111,235,.05)}
