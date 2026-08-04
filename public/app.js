@@ -43,6 +43,7 @@ async function enterApp() {
   $('login-screen').classList.add('hidden'); $('app').classList.remove('hidden');
   await loadColleges();
   loadAutoSyncStatus();
+  loadSharedTabs();
 }
 async function loadAutoSyncStatus() {
   try {
@@ -197,10 +198,10 @@ async function loadCollegeContests() {
   if (!id) { t.innerHTML = ''; return; }
   const contests = (await api('/api/contests?collegeId=' + id)).contests || [];
   t.innerHTML =
-    `<thead><tr><th>#</th><th>Contest</th><th>Slug</th><th>Link</th><th></th></tr></thead><tbody>` +
+    `<thead><tr><th>#</th><th>Course</th><th>Slug</th><th>Link</th><th></th></tr></thead><tbody>` +
     (contests.length ? contests.map((c, i) =>
       `<tr><td class="num">${i + 1}</td><td>${esc(c.name)}</td><td>${c.slug ? esc(c.slug) : '<span class="muted">—</span>'}</td><td class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">${esc(c.contestUrl || '—')}</td><td><button class="ghost sm danger" data-delcc="${c.id}">Delete</button></td></tr>`).join('')
-      : `<tr><td colspan="5" class="muted">No contests yet.</td></tr>`) + `</tbody>`;
+      : `<tr><td colspan="5" class="muted">No courses yet.</td></tr>`) + `</tbody>`;
 }
 async function refreshContestSelectors(collegeId) {
   await loadCollegeContests();
@@ -211,7 +212,7 @@ $('cc-add').addEventListener('click', async () => {
   const id = $('cc-college').value;
   if (!id) return setStatus($('cc-status'), 'Pick a college.', 'err');
   const name = $('cc-name').value.trim(); const link = $('cc-link').value.trim();
-  if (!name) return setStatus($('cc-status'), 'Enter a contest name.', 'err');
+  if (!name) return setStatus($('cc-status'), 'Enter a course name.', 'err');
   try {
     await api('/api/contests', { method: 'POST', body: { collegeId: id, name, contestUrl: link } });
     $('cc-name').value = ''; $('cc-link').value = '';
@@ -227,16 +228,16 @@ $('cc-bulk-add').addEventListener('click', async () => {
   const existing = (await api('/api/contests?collegeId=' + id)).contests || [];
   let n = existing.length;
   try {
-    for (const link of links) { n++; await api('/api/contests', { method: 'POST', body: { collegeId: id, name: 'Contest ' + n, contestUrl: link } }); }
+    for (const link of links) { n++; await api('/api/contests', { method: 'POST', body: { collegeId: id, name: 'Course ' + n, contestUrl: link } }); }
     $('cc-bulk').value = '';
-    setStatus($('cc-status'), `Added ${links.length} contest(s).`, 'ok');
+    setStatus($('cc-status'), `Added ${links.length} course(s).`, 'ok');
     await refreshContestSelectors(id);
   } catch (e) { setStatus($('cc-status'), e.message, 'err'); }
 });
 $('cc-table').addEventListener('click', async (e) => {
   const del = e.target.closest('[data-delcc]');
   if (!del) return;
-  if (!confirm('Delete this contest?')) return;
+  if (!confirm('Delete this course?')) return;
   await api('/api/contests/' + del.dataset.delcc, { method: 'DELETE' });
   await refreshContestSelectors($('cc-college').value);
 });
@@ -249,7 +250,7 @@ async function loadUploadContests() {
   if (!id) { sel.innerHTML = `<option value="">(no college)</option>`; await loadStudentFacets(); return; }
   const [contestsRes] = await Promise.all([api('/api/contests?collegeId=' + id), loadStudentFacets()]);
   const contests = contestsRes.contests || [];
-  sel.innerHTML = `<option value="">College only (no contest)</option>` + contests.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  sel.innerHTML = `<option value="">College only (no course)</option>` + contests.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
 }
 function pickCol(h, kws, exclude = []) {
   const ex = new Set(exclude.filter((i) => i >= 0));
@@ -441,12 +442,39 @@ $('autosync-btn').addEventListener('click', async () => {
 $('share-btn').addEventListener('click', shareContest);
 $('contest-add').addEventListener('click', addContest);
 async function shareContest() {
-  if (!selectedContestId) return setStatus($('dash-status'), 'Select a contest first.', 'err');
+  if (!selectedContestId) return setStatus($('dash-status'), 'Select a course first.', 'err');
   try {
     const r = await api('/api/contests/' + selectedContestId + '/share', { method: 'POST' });
     const url = location.origin + '/view/' + r.token;
     try { await navigator.clipboard.writeText(url); setStatus($('dash-status'), `Read-only link copied: ${url}`, 'ok'); }
     catch { window.prompt('Read-only dashboard link (copy it):', url); }
+  } catch (e) { setStatus($('dash-status'), e.message, 'err'); }
+}
+// Shared-tab visibility checkboxes
+async function loadSharedTabs() {
+  try {
+    const t = await api('/api/shared-tabs');
+    $('st-dashboard').checked = t.dashboard !== false;
+    $('st-daily').checked = t.daily !== false;
+    $('st-attendance').checked = t.attendance !== false;
+  } catch { /* ignore */ }
+}
+['st-dashboard', 'st-daily', 'st-attendance'].forEach((id) => $(id).addEventListener('change', async () => {
+  const body = { dashboard: $('st-dashboard').checked, daily: $('st-daily').checked, attendance: $('st-attendance').checked };
+  // Never let all three be off — keep Dashboard on as a floor.
+  if (!body.dashboard && !body.daily && !body.attendance) { $('st-dashboard').checked = true; body.dashboard = true; }
+  try { await api('/api/shared-tabs', { method: 'POST', body }); $('st-status').textContent = 'Saved'; setTimeout(() => { $('st-status').textContent = ''; }, 1500); }
+  catch (e) { $('st-status').textContent = e.message; }
+}));
+
+$('share-college-btn').addEventListener('click', shareCollege);
+async function shareCollege() {
+  if (!selectedCollegeId) return setStatus($('dash-status'), 'Select a college first.', 'err');
+  try {
+    const r = await api('/api/colleges/' + selectedCollegeId + '/share', { method: 'POST' });
+    const url = location.origin + '/college/' + r.token;
+    try { await navigator.clipboard.writeText(url); setStatus($('dash-status'), `College link copied (all contests): ${url}`, 'ok'); }
+    catch { window.prompt('College dashboard link (copy it):', url); }
   } catch (e) { setStatus($('dash-status'), e.message, 'err'); }
 }
 $('contest-del').addEventListener('click', delContest);
@@ -464,14 +492,14 @@ async function loadDashContests() {
 }
 async function addContest() {
   if (!selectedCollegeId) return setStatus($('dash-status'), 'Pick a college first.', 'err');
-  const name = prompt('Contest name (e.g. Round 1):'); if (!name) return;
-  const contestUrl = prompt('HackerRank contest link:') || '';
+  const name = prompt('Course name (e.g. Round 1):'); if (!name) return;
+  const contestUrl = prompt('HackerRank course link:') || '';
   try { const r = await api('/api/contests', { method: 'POST', body: { collegeId: selectedCollegeId, name, contestUrl } }); selectedContestId = String(r.contest.id); await loadDashContests(); setStatus($('dash-status'), `Added "${name}". Connect HackerRank and Sync it.`, 'ok'); }
   catch (e) { setStatus($('dash-status'), e.message, 'err'); }
 }
 async function delContest() {
   if (!selectedContestId) return;
-  if (!confirm('Delete this contest?')) return;
+  if (!confirm('Delete this course?')) return;
   await api('/api/contests/' + selectedContestId, { method: 'DELETE' });
   selectedContestId = ''; await loadDashContests();
 }
@@ -481,8 +509,8 @@ function showContestLink() {
   $('dash-contest-url').value = ct ? (ct.contestUrl || '') : '';
 }
 $('dash-savelink').addEventListener('click', async () => {
-  if (!selectedContestId) return setStatus($('dash-status'), 'Select a contest first.', 'err');
-  try { await api('/api/contests/' + selectedContestId, { method: 'PUT', body: { contestUrl: $('dash-contest-url').value.trim() } }); setStatus($('dash-status'), 'Contest link saved. Sync it now.', 'ok'); await loadDashContests(); }
+  if (!selectedContestId) return setStatus($('dash-status'), 'Select a course first.', 'err');
+  try { await api('/api/contests/' + selectedContestId, { method: 'PUT', body: { contestUrl: $('dash-contest-url').value.trim() } }); setStatus($('dash-status'), 'Course link saved. Sync it now.', 'ok'); await loadDashContests(); }
   catch (e) { setStatus($('dash-status'), e.message, 'err'); }
 });
 
@@ -513,7 +541,7 @@ async function loadDashboard() {
     // Only when there's no contest do we need the whole-college roster.
     roster = selectedCollegeId ? (await api('/api/students?college=' + encodeURIComponent(collegeName(selectedCollegeId)))).students || [] : [];
     dashData = null; dashTopics = {}; fillFilters(); renderSummary(); renderTopicAnalysis(); renderStudents();
-    setStatus($('dash-status'), 'No contest yet — add one with ＋ Contest.', 'info'); return;
+    setStatus($('dash-status'), 'No course yet — add one with ＋ Course.', 'info'); return;
   }
   const id = String(selectedContestId);
   const cached = dashCache.get(id);
@@ -805,7 +833,7 @@ function renderSummary() {
   if (!dashData) { sm.classList.add('hidden'); return; }
   sm.classList.remove('hidden');
   const inContest = roster.filter((s) => dashData.users.some((u) => u.username.toLowerCase() === s.hrUsername.toLowerCase())).length;
-  sm.innerHTML = [['Students', roster.length], ['In contest', inContest], ['Questions', dashData.summary.totalQuestions], ['Avg solved', dashData.summary.avgSolved], ['Completion', dashData.summary.overallCompletion + '%']]
+  sm.innerHTML = [['Students', roster.length], ['In course', inContest], ['Questions', dashData.summary.totalQuestions], ['Avg solved', dashData.summary.avgSolved], ['Completion', dashData.summary.overallCompletion + '%']]
     .map(([l, v]) => `<div class="stat"><div class="value">${v}</div><div class="label">${l}</div></div>`).join('');
 }
 function joinedRows() {
@@ -877,19 +905,39 @@ async function loadDailyContests() {
   sel.value = dailyContestId;
   renderDaily();
 }
+let dailyDataCache = null; // { days, students } for the loaded course
 async function renderDaily() {
   const t = $('daily-table');
-  if (!dailyContestId) { t.innerHTML = ''; $('daily-note').textContent = ''; return; }
+  if (!dailyContestId) { t.innerHTML = ''; $('daily-note').textContent = ''; dailyDataCache = null; return; }
   const d = await api('/api/daily/' + dailyContestId);
-  if (!d.days.length) { t.innerHTML = `<tbody><tr><td class="muted">No snapshots yet — sync this contest on at least one day (ideally daily) to build history.</td></tr></tbody>`; $('daily-note').textContent = ''; return; }
-  $('daily-note').textContent = `· ${d.students.length} students · ${d.days.length} day(s)`;
+  dailyDataCache = d;
+  if (!d.days.length) { t.innerHTML = `<tbody><tr><td class="muted">No snapshots yet — sync this course on at least one day (ideally daily) to build history.</td></tr></tbody>`; $('daily-note').textContent = ''; return; }
+  // Populate filter dropdowns from this course's students.
+  const dailyLabels = { department: 'departments', section: 'sections', year: 'years', campus: 'campuses' };
+  for (const [id, key] of [['daily-f-campus', 'campus'], ['daily-f-department', 'department'], ['daily-f-section', 'section'], ['daily-f-year', 'year']]) {
+    const sel = $(id); const prev = sel.value;
+    const vals = Array.from(new Set(d.students.map((s) => s[key]).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }));
+    sel.innerHTML = `<option value="">All ${dailyLabels[key]}</option>` + vals.map((v) => `<option>${esc(v)}</option>`).join('');
+    if (vals.includes(prev)) sel.value = prev;
+  }
+  drawDailyTable();
+}
+function drawDailyTable() {
+  const d = dailyDataCache; if (!d) return;
+  const t = $('daily-table');
+  const f = { campus: $('daily-f-campus').value, department: $('daily-f-department').value, section: $('daily-f-section').value, year: $('daily-f-year').value, q: $('daily-f-search').value.trim().toLowerCase() };
+  const students = d.students.filter((s) => (!f.campus || s.campus === f.campus) && (!f.department || s.department === f.department) && (!f.section || s.section === f.section) && (!f.year || s.year === f.year)
+    && (!f.q || (s.name || '').toLowerCase().includes(f.q) || (s.hrUsername || '').toLowerCase().includes(f.q)));
+  $('daily-note').textContent = `· ${students.length}${students.length !== d.students.length ? ' of ' + d.students.length : ''} students · ${d.days.length} day(s)`;
   const fmtDay = (s) => { const dt = new Date(s + 'T00:00'); return isNaN(dt) ? s : dt.toLocaleDateString([], { month: 'short', day: 'numeric' }); };
   t.innerHTML =
     `<thead><tr><th class="sticky-name">Student</th>${d.days.map((day) => `<th class="num">${esc(fmtDay(day))}</th>`).join('')}<th class="num">Total</th></tr></thead><tbody>` +
-    (d.students.length ? d.students.map((s) =>
+    (students.length ? students.map((s) =>
       `<tr><td class="sticky-name">${esc(s.name || s.hrUsername)}</td>${s.daily.map((n) => `<td class="num">${n ? n : '<span class="muted">·</span>'}</td>`).join('')}<td class="num">${s.total}</td></tr>`).join('')
-      : `<tr><td class="muted">No students mapped to this contest.</td></tr>`) + `</tbody>`;
+      : `<tr><td class="muted">No students match these filters.</td></tr>`) + `</tbody>`;
 }
+['daily-f-campus', 'daily-f-department', 'daily-f-section', 'daily-f-year'].forEach((id) => $(id).addEventListener('change', drawDailyTable));
+$('daily-f-search').addEventListener('input', drawDailyTable);
 
 // ---------- Topics tab ----------
 let topicsCollegeId = '', topicsContestId = '', topicsContests = [];
@@ -910,8 +958,8 @@ async function loadTopicsEditor() {
   if (!topicsContestId) { $('topics-table').innerHTML = ''; $('t-contest').value = ''; setStatus($('t-status'), 'No contests for this college — add one in the Dashboard tab.', 'info'); return; }
   const d = await api('/api/topics/' + topicsContestId);
   $('t-contest').value = d.contestUrl || '';
-  if (!d.contestUrl) { $('topics-table').innerHTML = ''; setStatus($('t-status'), 'This contest has no link. Set it above and Save link.', 'info'); return; }
-  if (!d.hasScrape) { $('topics-table').innerHTML = ''; $('topic-videos-card').classList.add('hidden'); setStatus($('t-status'), `Contest "${d.slug}" not synced yet. Sync it in the Dashboard tab to load its questions.`, 'info'); return; }
+  if (!d.contestUrl) { $('topics-table').innerHTML = ''; setStatus($('t-status'), 'This course has no link. Set it above and Save link.', 'info'); return; }
+  if (!d.hasScrape) { $('topics-table').innerHTML = ''; $('topic-videos-card').classList.add('hidden'); setStatus($('t-status'), `Course "${d.slug}" not synced yet. Sync it in the Dashboard tab to load its questions.`, 'info'); return; }
   setStatus($('t-status'), `${d.questions.length} questions in ${d.slug}.`, 'info');
   $('topics-table').innerHTML =
     `<thead><tr><th>#</th><th>Question</th><th>Topic</th><th>Category</th></tr></thead><tbody>` +
@@ -940,7 +988,7 @@ $('t-bulk-cat').innerHTML = QCATS.map(([v, l]) => `<option value="${v}">${v ? l 
 function bulkSetCategory(onlyBlank) {
   const val = $('t-bulk-cat').value;
   const sels = document.querySelectorAll('#topics-table .qcat-in');
-  if (!sels.length) return setStatus($('t-status'), 'No questions loaded — pick a synced contest first.', 'err');
+  if (!sels.length) return setStatus($('t-status'), 'No questions loaded — pick a synced course first.', 'err');
   let n = 0;
   sels.forEach((sel) => { if (onlyBlank && sel.value) return; sel.value = val; n++; });
   const label = (QCATS.find(([v]) => v === val) || ['', '—'])[1];
@@ -959,7 +1007,7 @@ $('t-savelink').addEventListener('click', async () => {
   if (!topicsContestId) return;
   try {
     await api('/api/contests/' + topicsContestId, { method: 'PUT', body: { contestUrl: $('t-contest').value.trim() } });
-    setStatus($('t-status'), 'Contest link saved. Now sync it in the Dashboard tab.', 'ok');
+    setStatus($('t-status'), 'Course link saved. Now sync it in the Dashboard tab.', 'ok');
     await loadTopicsContests();
   } catch (e) { setStatus($('t-status'), e.message, 'err'); }
 });
@@ -1005,8 +1053,8 @@ function openPerf(hrUsername) {
   ].filter(Boolean).join(' · ');
 
   if (!dashData || !u) {
-    $('perf-stats').innerHTML = `<div class="stat"><div class="value">—</div><div class="label">No contest data</div></div>`;
-    $('perf-topics').innerHTML = `<p class="muted">${dashData ? 'This student did not appear in the contest scrape.' : 'No contest synced yet for this college.'}</p>`;
+    $('perf-stats').innerHTML = `<div class="stat"><div class="value">—</div><div class="label">No course data</div></div>`;
+    $('perf-topics').innerHTML = `<p class="muted">${dashData ? 'This student did not appear in the course scrape.' : 'No course synced yet for this college.'}</p>`;
     $('perf-table').innerHTML = '';
     $('perf-modal').classList.remove('hidden');
     return;
@@ -1016,7 +1064,7 @@ function openPerf(hrUsername) {
   const contestRank = dashData.users.slice().sort((a, b) => b.computedScore - a.computedScore).findIndex((x) => x.username === u.username) + 1;
   $('perf-stats').innerHTML = [
     ['Solved', `${u.solved}/${totalQ}`], ['Score', u.computedScore], ['Completion', Math.round((u.solved / totalQ) * 100) + '%'],
-    ['Attempted', u.attempted], ['Contest rank', `#${contestRank}`],
+    ['Attempted', u.attempted], ['Course rank', `#${contestRank}`],
   ].map(([l, v]) => `<div class="stat"><div class="value">${v}</div><div class="label">${l}</div></div>`).join('');
 
   // Per-topic breakdown (parsed from "Topic - Title")
@@ -1066,10 +1114,10 @@ $('perf-topics').addEventListener('click', (e) => {
 
 // ---------- Sync (scrape) ----------
 function syncContest() {
-  if (!selectedContestId) return setStatus($('dash-status'), 'Add or select a contest first.', 'err');
+  if (!selectedContestId) return setStatus($('dash-status'), 'Add or select a course first.', 'err');
   if (!hrToken) { $('connect-modal').classList.remove('hidden'); return; }
   const ct = dashContests.find((c) => String(c.id) === String(selectedContestId));
-  if (!ct || !ct.slug) return setStatus($('dash-status'), 'This contest has no link — delete and re-add it with a link.', 'err');
+  if (!ct || !ct.slug) return setStatus($('dash-status'), 'This course has no link — delete and re-add it with a link.', 'err');
   $('sync-btn').disabled = true;
   $('dash-progress').classList.remove('hidden'); $('dash-prog-lab').textContent = 'Starting…'; $('dash-prog-fill').style.width = '0%';
   setStatus($('dash-status'), `Syncing ${ct.name}…`, 'info');
@@ -1084,7 +1132,7 @@ function syncContest() {
 $('sync-all-btn').addEventListener('click', syncAll);
 function syncAll() {
   if (!hrToken) { $('connect-modal').classList.remove('hidden'); return; }
-  if (!confirm('Scrape every contest in every college? This can take a long while.')) return;
+  if (!confirm('Scrape every course in every college? This can take a long while.')) return;
   const btns = ['sync-btn', 'sync-all-btn'];
   btns.forEach((b) => { $(b).disabled = true; });
   $('dash-progress').classList.remove('hidden'); $('dash-prog-lab').textContent = 'Starting…'; $('dash-prog-fill').style.width = '0%';
@@ -1092,7 +1140,7 @@ function syncAll() {
   const done = [];
   const stop = () => { btns.forEach((b) => { $(b).disabled = false; }); };
   const es = new EventSource('/api/sync-all-stream?' + new URLSearchParams({ adminToken, hrToken }));
-  es.addEventListener('start', (ev) => { const d = JSON.parse(ev.data); setStatus($('dash-status'), `Syncing ${d.total} contest(s) across all colleges…`, 'info'); });
+  es.addEventListener('start', (ev) => { const d = JSON.parse(ev.data); setStatus($('dash-status'), `Syncing ${d.total} course(s) across all colleges…`, 'info'); });
   es.addEventListener('contest', (ev) => {
     const p = JSON.parse(ev.data);
     $('dash-prog-lab').textContent = `(${p.index}/${p.total}) ${p.college} — ${p.name}: starting…`;
@@ -1115,7 +1163,7 @@ function syncAll() {
   es.addEventListener('done', (ev) => {
     es.close(); stop(); $('dash-prog-fill').style.width = '100%';
     const d = JSON.parse(ev.data);
-    const msg = `Synced ${d.ok} of ${d.total} contest(s).` + (d.failures.length ? ` ${d.failures.length} failed.` : '');
+    const msg = `Synced ${d.ok} of ${d.total} course(s).` + (d.failures.length ? ` ${d.failures.length} failed.` : '');
     setStatus($('dash-status'), msg, d.failures.length ? 'err' : 'ok');
     if (d.failures.length) $('dash-prog-lab').textContent = 'Failed: ' + d.failures.join(' · ');
     else $('dash-prog-lab').textContent = 'All done.';

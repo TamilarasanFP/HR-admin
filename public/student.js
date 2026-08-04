@@ -41,7 +41,7 @@ async function onContinue() {
   }
   const hrUsername = $('name-select').value;
   if (!hrUsername) return setStatus($('login-status'), 'Select your name.', 'err');
-  if (!contests.length) return setStatus($('login-status'), 'No contests are assigned to you yet. Ask your admin.', 'err');
+  if (!contests.length) return setStatus($('login-status'), 'No courses are assigned to you yet. Ask your admin.', 'err');
   const contestId = $('contest-select').value || String(contests[0].id);
   cur = { college, code, hrUsername, contestId };
   loadPractice();
@@ -55,9 +55,9 @@ $('name-select').addEventListener('change', async (e) => {
   try {
     const d = await post('/api/student/contests', { college, accessCode: code, hrUsername });
     contests = d.contests || [];
-    $('contest-select').innerHTML = contests.length ? contests.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('') : `<option value="">No contests assigned to you</option>`;
+    $('contest-select').innerHTML = contests.length ? contests.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join('') : `<option value="">No courses assigned to you</option>`;
     $('contest-row').style.display = 'flex';
-    setStatus($('login-status'), contests.length ? 'Pick your contest, then Continue.' : 'No contests are assigned to you yet.', contests.length ? 'ok' : 'err');
+    setStatus($('login-status'), contests.length ? 'Pick your course, then Continue.' : 'No courses are assigned to you yet.', contests.length ? 'ok' : 'err');
   } catch (err) { setStatus($('login-status'), err.message, 'err'); }
 });
 
@@ -80,7 +80,7 @@ function render(d) {
   topicVideos = d.topicVideos || {};
   const qs = d.questions || [];
   if (!d.contest || !qs.length) {
-    $('sv-header').innerHTML = `<h1>${esc(me?.name || hrUsername)}</h1><p class="muted">No contest published for ${esc(college)} yet. Check back later.</p>`;
+    $('sv-header').innerHTML = `<h1>${esc(me?.name || hrUsername)}</h1><p class="muted">No course published for ${esc(college)} yet. Check back later.</p>`;
     $('sv-tabs').classList.add('hidden'); $('sv-stats').innerHTML = ''; $('sv-topics').innerHTML = ''; $('sv-list').innerHTML = ''; $('sv-pager').innerHTML = '';
     return;
   }
@@ -95,7 +95,7 @@ function render(d) {
   // Dashboard section: stat cards + by-topic
   $('sv-stats').innerHTML = [
     ['Solved', `${st.solved}/${st.total}`], ['Score', st.score], ['Completion', pct + '%'],
-    ['Attempted', st.attempted], st.rank ? ['Contest rank', `#${st.rank}`] : null,
+    ['Attempted', st.attempted], st.rank ? ['Course rank', `#${st.rank}`] : null,
   ].filter(Boolean).map(([l, v]) => `<div class="stat"><div class="value">${v}</div><div class="label">${esc(l)}</div></div>`).join('');
 
   const topics = new Map();

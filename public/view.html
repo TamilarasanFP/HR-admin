@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contest Dashboard</title>
+  <title>Course Dashboard</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -15,8 +15,11 @@
   </header>
 
   <main class="container">
-    <div id="view-status" class="status" style="margin-bottom:12px"></div>
-    <h2 id="view-title" style="margin:6px 0"></h2>
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:2px 0 4px">
+      <h2 id="view-title" style="margin:0"></h2>
+      <label id="view-contest-wrap" class="inline-label hidden" style="margin:0">Course: <select id="view-contest"></select></label>
+    </div>
+    <div id="view-status" class="status" style="margin-top:0"></div>
 
     <nav class="tabs" id="view-tabs" style="margin:10px 0 18px;border-bottom:1px solid var(--border)">
       <button class="tab active" data-vtab="dashboard">Dashboard</button>
@@ -77,6 +80,13 @@
       <div class="card">
         <div class="card-head"><h3>Daily questions completed <span class="muted" id="daily-note"></span></h3></div>
         <p class="muted">Questions each student completed per day over the <b>last 10 days</b>, ending today. Days with no sync show a dot (no change recorded).</p>
+        <div class="form-row" style="margin:0 0 8px">
+          <select id="daily-f-campus"><option value="">All campuses</option></select>
+          <select id="daily-f-department"><option value="">All departments</option></select>
+          <select id="daily-f-section"><option value="">All sections</option></select>
+          <select id="daily-f-year"><option value="">All years</option></select>
+          <input id="daily-f-search" placeholder="Search name / username…" style="flex:0 0 200px" />
+        </div>
         <div class="table-scroll"><table id="daily-table" class="data-table"></table></div>
       </div>
     </div>

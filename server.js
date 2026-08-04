@@ -129,7 +129,7 @@ app.put('/api/contests/:id', requireAdmin, async (req, res) => {
     if (name !== undefined) fields.name = name;
     if (contestUrl !== undefined) { fields.contestUrl = contestUrl; fields.slug = slugFromUrl(contestUrl); }
     const c = await db.updateContest(req.params.id, fields);
-    if (!c) return res.status(404).json({ error: 'Contest not found.' });
+    if (!c) return res.status(404).json({ error: 'Course not found.' });
     res.json({ ok: true, contest: c });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -138,7 +138,7 @@ app.delete('/api/contests/:id', requireAdmin, async (req, res) => { try { res.js
 app.post('/api/contests/:id/share', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.id);
-    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    if (!contest) return res.status(404).json({ error: 'Course not found.' });
     let token = contest.shareToken;
     if (!token) { token = crypto.randomBytes(9).toString('hex'); await db.setContestShareToken(contest.id, token); }
     res.json({ ok: true, token });
@@ -370,7 +370,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     const session = hrSessions.get(hrToken);
     if (!session) { send('failed', { error: 'Connect your HackerRank account first.' }); return res.end(); }
     const ct = await db.getContest(contestId);
-    if (!ct || !ct.slug) { send('failed', { error: 'Contest has no link.' }); return res.end(); }
+    if (!ct || !ct.slug) { send('failed', { error: 'Course has no link.' }); return res.end(); }
     const slug = ct.slug;
 
     if (MOCK || session.mock) {
@@ -388,7 +388,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     const rankMap = new Map(leaderboard.map((l) => [String(l.username).toLowerCase(), l.rank]));
 
     const { targets, source, capped, rosterCount } = await resolveScrapeTargets(ct, leaderboard);
-    if (!targets.length) { send('failed', { error: 'No students mapped to this contest and no leaderboard entries. Upload a roster and map it to this contest.' }); return res.end(); }
+    if (!targets.length) { send('failed', { error: 'No students mapped to this course and no leaderboard entries. Upload a roster and map it to this course.' }); return res.end(); }
     send('progress', { phase: 'comparing', completed: 0, total: targets.length, source, capped, rosterCount });
 
     const reference = (leaderboard[0] && leaderboard[0].username) || targets[0];
@@ -445,7 +445,7 @@ function resolveTopic(saved, name) { return (saved && saved[name]) || titleTag(n
 app.get('/api/contest-dashboard/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    if (!contest) return res.status(404).json({ error: 'Course not found.' });
     const [dash, topics, categories, students] = await Promise.all([
       contest.slug ? cachedLatestScrape(contest.slug) : null,
       contest.slug ? db.getTopics(contest.slug) : {},
@@ -460,7 +460,7 @@ app.get('/api/contest-dashboard/:contestId', requireAdmin, async (req, res) => {
 app.get('/api/topics/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    if (!contest) return res.status(404).json({ error: 'Course not found.' });
     const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
     const saved = contest.slug ? await db.getTopics(contest.slug) : {};
     const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
@@ -471,7 +471,7 @@ app.get('/api/topics/:contestId', requireAdmin, async (req, res) => {
 app.post('/api/topics/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Course has no link.' });
     res.json({ ok: true, ...(await db.saveTopics(contest.slug, req.body?.map || {})) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -487,7 +487,7 @@ async function distinctTopics(slug, dash) {
 app.get('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    if (!contest) return res.status(404).json({ error: 'Course not found.' });
     const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
     const videos = contest.slug ? await db.getTopicVideos(contest.slug) : {};
     const topics = (await distinctTopics(contest.slug, dash)).map((t) => ({ name: t, videos: videos[t] || [] }));
@@ -497,7 +497,7 @@ app.get('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
 app.post('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Course has no link.' });
     res.json({ ok: true, ...(await db.saveTopicVideos(contest.slug, req.body?.map || {})) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -506,7 +506,7 @@ app.post('/api/topic-videos/:contestId', requireAdmin, async (req, res) => {
 app.get('/api/question-categories/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+    if (!contest) return res.status(404).json({ error: 'Course not found.' });
     const dash = contest.slug ? await cachedLatestScrape(contest.slug) : null;
     const cats = contest.slug ? await db.getQuestionCategories(contest.slug) : {};
     const questions = dash ? dash.questions.map((q) => ({ name: q.name, category: cats[q.name] || '' })) : [];
@@ -516,7 +516,7 @@ app.get('/api/question-categories/:contestId', requireAdmin, async (req, res) =>
 app.post('/api/question-categories/:contestId', requireAdmin, async (req, res) => {
   try {
     const contest = await db.getContest(req.params.contestId);
-    if (!contest || !contest.slug) return res.status(400).json({ error: 'Contest has no link.' });
+    if (!contest || !contest.slug) return res.status(400).json({ error: 'Course has no link.' });
     res.json({ ok: true, ...(await db.saveQuestionCategories(contest.slug, req.body?.map || {})) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -558,7 +558,7 @@ async function computeDaily(contest, N = 10) {
       prev = cur;
       return delta;
     });
-    return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, daily, total: prev };
+    return { name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, campus: s.campus, daily, total: prev };
   }).sort((a, b) => b.total - a.total);
   return { days, students };
 }
@@ -567,7 +567,7 @@ async function computeDaily(contest, N = 10) {
 app.get('/api/daily/:contestId', requireAdmin, async (req, res) => {
  try {
   const contest = await db.getContest(req.params.contestId);
-  if (!contest) return res.status(404).json({ error: 'Contest not found.' });
+  if (!contest) return res.status(404).json({ error: 'Course not found.' });
   const N = Math.min(Math.max(parseInt(req.query.days, 10) || 10, 1), 60); // last N days (default 10)
   const { days, students } = await computeDaily(contest, N);
   res.json({ contest: { name: contest.name }, days, students });
@@ -628,36 +628,110 @@ app.post('/api/student/practice', async (req, res) => {
  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ---------------- Read-only shared dashboard (token) ----------------
+// Which tabs the shared (read-only) views may show. Global, default all on.
+async function getSharedTabs() {
+  const raw = await db.getSetting('shared_tabs');
+  let t = {}; try { t = raw ? JSON.parse(raw) : {}; } catch { /* */ }
+  return { dashboard: t.dashboard !== false, daily: t.daily !== false, attendance: t.attendance !== false };
+}
+app.get('/api/shared-tabs', requireAdmin, async (_req, res) => {
+  try { res.json(await getSharedTabs()); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/api/shared-tabs', requireAdmin, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const t = { dashboard: !!b.dashboard, daily: !!b.daily, attendance: !!b.attendance };
+    await db.setSetting('shared_tabs', JSON.stringify(t));
+    res.json({ ok: true, ...t });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Build the read-only payload for one contest (shared by contest + college links).
+async function contestSharePayload(contest) {
+  const [dash, topics, rosterRaw, topicVideos, categories] = await Promise.all([
+    contest.slug ? cachedLatestScrape(contest.slug) : null,
+    contest.slug ? db.getTopics(contest.slug) : {},
+    db.listStudentsForContest(contest.id),
+    contest.slug ? db.getTopicVideos(contest.slug) : {},
+    contest.slug ? db.getQuestionCategories(contest.slug) : {},
+  ]);
+  const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, campus: s.campus, registerNo: s.registerNo }));
+  const daily = await computeDaily(contest, 10);
+  return { college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily, tabs: await getSharedTabs() };
+}
+async function collegeAttendance(collegeName) {
+  const college = await db.getCollegeByName(collegeName);
+  const url = college ? await db.getSetting(attKey(college.id)) : null;
+  if (!url) return { sheets: [] };
+  return fetchAttendance(url);
+}
+
+// ---------------- Read-only shared dashboard (contest token) ----------------
 app.get('/api/shared/:token', async (req, res) => {
   try {
     const contest = await db.getContestByShareToken(req.params.token);
     if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
-    const [dash, topics, rosterRaw, topicVideos, categories] = await Promise.all([
-      contest.slug ? cachedLatestScrape(contest.slug) : null,
-      contest.slug ? db.getTopics(contest.slug) : {},
-      db.listStudentsForContest(contest.id),
-      contest.slug ? db.getTopicVideos(contest.slug) : {},
-      contest.slug ? db.getQuestionCategories(contest.slug) : {},
-    ]);
-    const roster = rosterRaw.map((s) => ({ name: s.name, hrUsername: s.hrUsername, department: s.department, section: s.section, year: s.year, campus: s.campus, registerNo: s.registerNo }));
-    const daily = await computeDaily(contest, 10); // last 10 calendar days
-    res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily });
+    res.json(await contestSharePayload(contest));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-// Attendance for a shared link — resolves the contest's college to its sheet.
 app.get('/api/shared/:token/attendance', async (req, res) => {
   try {
     const contest = await db.getContestByShareToken(req.params.token);
     if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
-    const college = await db.getCollegeByName(contest.college);
-    const url = college ? await db.getSetting(attKey(college.id)) : null;
-    if (!url) return res.json({ sheets: [] });
-    const data = await fetchAttendance(url);
-    res.json(data);
+    res.json(await collegeAttendance(contest.college));
+  } catch (e) { res.status(200).json({ error: e.message, sheets: [] }); }
+});
+
+// ---------------- College-wide share link ----------------
+// Token stored both ways in app_settings for O(1) lookup, no schema change.
+async function collegeIdForToken(token) { return token ? await db.getSetting('college_token:' + token) : null; }
+app.post('/api/colleges/:id/share', requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const colleges = await db.listColleges();
+    const college = colleges.find((c) => String(c.id) === id);
+    if (!college) return res.status(404).json({ error: 'College not found.' });
+    let token = await db.getSetting('college_share:' + id);
+    if (!token) {
+      token = crypto.randomBytes(9).toString('hex');
+      await db.setSetting('college_share:' + id, token);
+      await db.setSetting('college_token:' + token, id);
+    }
+    res.json({ ok: true, token });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Contests in a college for a share token.
+app.get('/api/college/:token/contests', async (req, res) => {
+  try {
+    const id = await collegeIdForToken(req.params.token);
+    if (!id) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
+    const college = (await db.listColleges()).find((c) => String(c.id) === String(id));
+    if (!college) return res.status(404).json({ error: 'College not found.' });
+    const contests = (await db.listContests(college.name)).map((c) => ({ id: c.id, name: c.name, hasLink: !!c.slug }));
+    res.json({ college: college.name, contests, tabs: await getSharedTabs() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// One contest's data via the college token (contest must belong to the college).
+app.get('/api/college/:token/contest/:contestId', async (req, res) => {
+  try {
+    const id = await collegeIdForToken(req.params.token);
+    if (!id) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
+    const college = (await db.listColleges()).find((c) => String(c.id) === String(id));
+    const contest = await db.getContest(req.params.contestId);
+    if (!college || !contest || contest.college !== college.name) return res.status(404).json({ error: 'Course not found for this link.' });
+    res.json(await contestSharePayload(contest));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/college/:token/attendance', async (req, res) => {
+  try {
+    const id = await collegeIdForToken(req.params.token);
+    if (!id) return res.status(404).json({ error: 'Invalid link.' });
+    const college = (await db.listColleges()).find((c) => String(c.id) === String(id));
+    res.json(await collegeAttendance(college ? college.name : ''));
   } catch (e) { res.status(200).json({ error: e.message, sheets: [] }); }
 });
 app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
+app.get('/college/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
 
 app.get('/student', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'student.html')));
 // ---------------- Automatic sync (scheduled) ----------------
@@ -689,7 +763,7 @@ async function autoSyncAll() {
     let ok = 0; const errs = [];
     for (const c of contests) { try { await scrapeAndSave(session, c); ok++; } catch (e) { errs.push(`${c.slug}: ${e.message}`); } }
     autoState.lastRun = new Date().toISOString();
-    autoState.lastResult = `${ok}/${contests.length} contests synced${errs.length ? ' · ' + errs.length + ' failed' : ''}`;
+    autoState.lastResult = `${ok}/${contests.length} courses synced${errs.length ? ' · ' + errs.length + ' failed' : ''}`;
     console.log('[auto-sync]', autoState.lastResult);
   } catch (e) {
     autoState.lastRun = new Date().toISOString();
