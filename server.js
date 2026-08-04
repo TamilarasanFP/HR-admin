@@ -145,6 +145,68 @@ app.post('/api/contests/:id/share', requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---------------- Attendance (Google Sheet — all tabs) ----------------
+// Convert a Google Sheets link into its XLSX-export URL (the whole workbook, so
+// every tab comes in one download). Requires the sheet to be shared
+// "anyone with the link can view" (or published to the web).
+function sheetXlsxUrl(url) {
+  const s = String(url || '').trim();
+  const idMatch = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/) || s.match(/[?&]id=([a-zA-Z0-9-_]+)/);
+  if (!idMatch) return null;
+  return `https://docs.google.com/spreadsheets/d/${idMatch[1]}/export?format=xlsx`;
+}
+// Fetch the workbook and return every sheet: [{ name, columns, rows }].
+async function fetchAttendance(url) {
+  const xlsxUrl = sheetXlsxUrl(url);
+  if (!xlsxUrl) throw new Error('Not a Google Sheets link. Paste the full sheet URL.');
+  let XLSX;
+  try { XLSX = await import('xlsx'); } catch { throw new Error('The "xlsx" package is not installed — run: npm install'); }
+  const res = await fetch(xlsxUrl, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`Could not read the sheet (HTTP ${res.status}). Make sure it's shared "anyone with the link can view".`);
+  const ctype = res.headers.get('content-type') || '';
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (ctype.includes('text/html') || buf.slice(0, 15).toString('utf8').includes('<!DOCTYPE')) {
+    throw new Error('The sheet is not public. In Google Sheets: Share → General access → "Anyone with the link" → Viewer.');
+  }
+  const wb = XLSX.read(buf, { type: 'buffer' });
+  const sheets = wb.SheetNames.map((name) => {
+    const grid = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, blankrows: false, defval: '' })
+      .filter((r) => r.some((c) => String(c).trim() !== ''));
+    return { name, columns: grid[0] || [], rows: grid.slice(1) };
+  });
+  return { sheets };
+}
+const attKey = (collegeId) => 'attendance_sheet_url:' + String(collegeId || '');
+app.get('/api/attendance', requireAdmin, async (req, res) => {
+  const collegeId = req.query.collegeId || '';
+  try {
+    if (!collegeId) return res.status(400).json({ error: 'Pick a college.' });
+    const url = await db.getSetting(attKey(collegeId));
+    if (!url) return res.json({ url: '', sheets: [] });
+    const data = await fetchAttendance(url);
+    res.json({ url, ...data });
+  } catch (e) { res.status(200).json({ url: (await db.getSetting(attKey(collegeId))) || '', error: e.message, sheets: [] }); }
+});
+app.post('/api/attendance', requireAdmin, async (req, res) => {
+  try {
+    const collegeId = String(req.body?.collegeId || '').trim();
+    const url = String(req.body?.url || '').trim();
+    if (!collegeId) return res.status(400).json({ error: 'Pick a college first.' });
+    if (!url) return res.status(400).json({ error: 'Paste a Google Sheets link.' });
+    const data = await fetchAttendance(url); // validate before saving
+    await db.setSetting(attKey(collegeId), url);
+    res.json({ ok: true, url, ...data });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete('/api/attendance', requireAdmin, async (req, res) => {
+  try {
+    const collegeId = String(req.query.collegeId || req.body?.collegeId || '').trim();
+    if (!collegeId) return res.status(400).json({ error: 'Pick a college first.' });
+    await db.setSetting(attKey(collegeId), '');
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
 // ---------------- Students (roster) ----------------
 app.get('/api/students', requireAdmin, async (req, res) => {
   try {
@@ -561,6 +623,18 @@ app.get('/api/shared/:token', async (req, res) => {
     const daily = await computeDaily(contest, 10); // last 10 calendar days
     res.json({ college: contest.college, contest: { name: contest.name }, dashboard: dash, topics, roster, topicVideos, categories, daily });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+// Attendance for a shared link — resolves the contest's college to its sheet.
+app.get('/api/shared/:token/attendance', async (req, res) => {
+  try {
+    const contest = await db.getContestByShareToken(req.params.token);
+    if (!contest) return res.status(404).json({ error: 'This link is invalid or was revoked.' });
+    const college = await db.getCollegeByName(contest.college);
+    const url = college ? await db.getSetting(attKey(college.id)) : null;
+    if (!url) return res.json({ sheets: [] });
+    const data = await fetchAttendance(url);
+    res.json(data);
+  } catch (e) { res.status(200).json({ error: e.message, sheets: [] }); }
 });
 app.get('/view/:token', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'view.html')));
 

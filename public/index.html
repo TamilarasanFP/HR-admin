@@ -30,6 +30,7 @@
         <button class="tab" data-tab="topics">Topics</button>
         <button class="tab" data-tab="colleges">Colleges</button>
         <button class="tab" data-tab="upload">Upload</button>
+        <button class="tab" data-tab="attendance">Attendance</button>
       </nav>
       <div class="top-actions">
         <span id="hr-pill" class="pill off">HR: not connected</span>
@@ -254,6 +255,27 @@
             <span id="bulk-count" class="muted"></span>
           </div>
           <div id="bulk-status" class="status"></div>
+        </div>
+      </section>
+
+      <!-- ATTENDANCE -->
+      <section id="panel-attendance" class="panel">
+        <div class="card">
+          <div class="card-head">
+            <h3>Attendance</h3>
+            <label class="inline-label">College: <select id="att-college"></select></label>
+          </div>
+          <p class="muted">Each college has its own attendance sheet. Paste a Google Sheets link for the selected college and its contents show below. The sheet must be shared <b>“Anyone with the link → Viewer”</b> (Share button in Google Sheets). Whatever columns and rows are in the sheet's first tab appear as-is.</p>
+          <div class="form-row">
+            <input id="att-url" placeholder="https://docs.google.com/spreadsheets/d/…" style="flex:1" />
+            <button id="att-load" class="primary sm">Load sheet</button>
+            <button id="att-refresh" class="ghost sm" title="Re-fetch the saved sheet">⟳ Refresh</button>
+            <button id="att-remove" class="ghost sm" title="Unlink this college's sheet">🗑 Remove link</button>
+          </div>
+          <div id="att-status" class="status"></div>
+          <div id="att-sheet-tabs" class="form-row" style="margin:0 0 8px;flex-wrap:wrap;gap:6px"></div>
+          <div class="form-row" style="margin:0 0 8px"><input id="att-search" placeholder="Search…" style="flex:0 0 240px" /><span id="att-count" class="muted"></span></div>
+          <div class="table-scroll" style="max-height:64vh"><table id="att-table" class="data-table"></table></div>
         </div>
       </section>
     </main>

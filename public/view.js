@@ -297,7 +297,46 @@ document.querySelectorAll('#view-tabs .tab').forEach((b) => b.addEventListener('
   const t = b.dataset.vtab;
   $('tab-dashboard').classList.toggle('hidden', t !== 'dashboard');
   $('tab-daily').classList.toggle('hidden', t !== 'daily');
+  $('tab-attendance').classList.toggle('hidden', t !== 'attendance');
+  if (t === 'attendance') loadSharedAttendance();
 }));
+
+// ---- Attendance (all tabs, read-only) ----
+let attSheets = [], attSheetIdx = 0, attLoaded = false;
+function renderAttSheetTabs() {
+  const el = $('att-sheet-tabs');
+  if (attSheets.length <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = attSheets.map((s, i) => `<button class="tab${i === attSheetIdx ? ' active' : ''}" data-idx="${i}" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px">${esc(s.name)} <span class="muted">(${s.rows.length})</span></button>`).join('');
+}
+function renderAttendance() {
+  renderAttSheetTabs();
+  const sheet = attSheets[attSheetIdx];
+  const q = $('att-search').value.trim().toLowerCase();
+  const cols = sheet ? sheet.columns : [];
+  const rows = sheet ? sheet.rows.filter((r) => !q || r.some((c) => String(c).toLowerCase().includes(q))) : [];
+  $('att-count').textContent = sheet ? `${rows.length} row${rows.length === 1 ? '' : 's'}${q ? ' (filtered)' : ''}` : '';
+  if (!cols.length) { $('att-table').innerHTML = sheet ? '<tbody><tr><td class="muted">This tab is empty.</td></tr></tbody>' : ''; return; }
+  $('att-table').innerHTML =
+    `<thead><tr><th class="num">#</th>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>` +
+    (rows.length ? rows.map((r, i) => `<tr><td class="num">${i + 1}</td>${cols.map((_, j) => `<td>${esc(r[j] ?? '')}</td>`).join('')}</tr>`).join('')
+      : `<tr><td colspan="${cols.length + 1}" class="muted">No rows.</td></tr>`) + `</tbody>`;
+}
+$('att-sheet-tabs').addEventListener('click', (e) => { const b = e.target.closest('button[data-idx]'); if (!b) return; attSheetIdx = Number(b.dataset.idx); renderAttendance(); });
+$('att-search').addEventListener('input', renderAttendance);
+async function loadSharedAttendance() {
+  if (attLoaded) return;
+  attLoaded = true;
+  $('att-note').textContent = '· loading…';
+  try {
+    const res = await fetch('/api/shared/' + token + '/attendance');
+    const d = await res.json();
+    attSheets = d.sheets || []; attSheetIdx = 0;
+    renderAttendance();
+    if (d.error) $('att-note').textContent = '· ' + d.error;
+    else if (!attSheets.length) $('att-note').textContent = '· no attendance sheet linked for this college';
+    else $('att-note').textContent = `· ${attSheets.length} tab(s)`;
+  } catch (e) { attLoaded = false; $('att-note').textContent = '· ' + e.message; }
+}
 
 // ---- Daily questions completed ----
 function fmtDay(iso) { const d = new Date(iso + 'T00:00:00'); return isNaN(d) ? iso : d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }

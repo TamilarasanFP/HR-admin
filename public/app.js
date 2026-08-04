@@ -58,7 +58,81 @@ async function loadAutoSyncStatus() {
 document.querySelectorAll('#tabs .tab').forEach((b) => b.addEventListener('click', () => {
   document.querySelectorAll('#tabs .tab').forEach((x) => x.classList.toggle('active', x === b));
   document.querySelectorAll('.panel').forEach((p) => p.classList.toggle('active', p.id === 'panel-' + b.dataset.tab));
+  if (b.dataset.tab === 'attendance') loadAttendance();
 }));
+
+// ---------- Attendance (Google Sheet, per college, all tabs) ----------
+let attSheets = [];      // [{ name, columns, rows }]
+let attSheetIdx = 0;
+let attCollegeId = '';
+function renderAttSheetTabs() {
+  const el = $('att-sheet-tabs');
+  if (attSheets.length <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = attSheets.map((s, i) =>
+    `<button class="tab${i === attSheetIdx ? ' active' : ''}" data-idx="${i}" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px">${esc(s.name)} <span class="muted">(${s.rows.length})</span></button>`).join('');
+}
+function renderAttendance() {
+  renderAttSheetTabs();
+  const sheet = attSheets[attSheetIdx];
+  const q = $('att-search').value.trim().toLowerCase();
+  const cols = sheet ? sheet.columns : [];
+  const rows = sheet ? sheet.rows.filter((r) => !q || r.some((c) => String(c).toLowerCase().includes(q))) : [];
+  $('att-count').textContent = sheet ? `${rows.length} row${rows.length === 1 ? '' : 's'}${q ? ' (filtered)' : ''}` : '';
+  if (!cols.length) { $('att-table').innerHTML = sheet ? '<tbody><tr><td class="muted">This tab is empty.</td></tr></tbody>' : ''; return; }
+  $('att-table').innerHTML =
+    `<thead><tr><th class="num">#</th>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>` +
+    (rows.length ? rows.map((r, i) => `<tr><td class="num">${i + 1}</td>${cols.map((_, j) => `<td>${esc(r[j] ?? '')}</td>`).join('')}</tr>`).join('')
+      : `<tr><td colspan="${cols.length + 1}" class="muted">No rows.</td></tr>`) + `</tbody>`;
+}
+$('att-sheet-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-idx]'); if (!b) return;
+  attSheetIdx = Number(b.dataset.idx); renderAttendance();
+});
+function applyAttResult(d) {
+  attSheets = d.sheets || []; attSheetIdx = 0;
+  renderAttendance();
+  const totalRows = attSheets.reduce((a, s) => a + s.rows.length, 0);
+  return { totalRows, tabs: attSheets.length };
+}
+async function loadAttendance() {
+  fillCollegeSelect($('att-college'));
+  if (!attCollegeId && colleges[0]) attCollegeId = String(colleges[0].id);
+  $('att-college').value = attCollegeId;
+  attSheets = []; attSheetIdx = 0; renderAttendance();
+  if (!attCollegeId) { setStatus($('att-status'), 'Add a college first (Colleges tab).', 'info'); $('att-url').value = ''; return; }
+  setStatus($('att-status'), 'Loading…', 'info');
+  try {
+    const d = await api('/api/attendance?collegeId=' + attCollegeId);
+    $('att-url').value = d.url || '';
+    const { totalRows, tabs } = applyAttResult(d);
+    if (d.error) setStatus($('att-status'), d.error, 'err');
+    else if (!d.url) setStatus($('att-status'), 'No sheet linked for this college yet — paste a Google Sheets link above and Load.', 'info');
+    else setStatus($('att-status'), `Loaded ${tabs} tab(s), ${totalRows} row(s) total.`, 'ok');
+  } catch (e) { setStatus($('att-status'), e.message, 'err'); }
+}
+$('att-college').addEventListener('change', (e) => { attCollegeId = e.target.value; loadAttendance(); });
+$('att-load').addEventListener('click', async () => {
+  const url = $('att-url').value.trim();
+  if (!attCollegeId) return setStatus($('att-status'), 'Pick a college first.', 'err');
+  if (!url) return setStatus($('att-status'), 'Paste a Google Sheets link first.', 'err');
+  setStatus($('att-status'), 'Fetching sheet…', 'info');
+  try {
+    const d = await api('/api/attendance', { method: 'POST', body: { collegeId: attCollegeId, url } });
+    const { totalRows, tabs } = applyAttResult(d);
+    setStatus($('att-status'), `Loaded and saved for this college — ${tabs} tab(s), ${totalRows} row(s).`, 'ok');
+  } catch (e) { setStatus($('att-status'), e.message, 'err'); }
+});
+$('att-refresh').addEventListener('click', () => loadAttendance());
+$('att-remove').addEventListener('click', async () => {
+  if (!attCollegeId) return setStatus($('att-status'), 'Pick a college first.', 'err');
+  if (!confirm('Remove the attendance sheet link for this college?')) return;
+  try {
+    await api('/api/attendance?collegeId=' + attCollegeId, { method: 'DELETE' });
+    $('att-url').value = ''; attSheets = []; attSheetIdx = 0; renderAttendance();
+    setStatus($('att-status'), 'Attendance link removed for this college.', 'ok');
+  } catch (e) { setStatus($('att-status'), e.message, 'err'); }
+});
+$('att-search').addEventListener('input', renderAttendance);
 
 // ---------- Colleges ----------
 async function loadColleges() {

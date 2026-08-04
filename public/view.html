@@ -21,6 +21,7 @@
     <nav class="tabs" id="view-tabs" style="margin:10px 0 18px;border-bottom:1px solid var(--border)">
       <button class="tab active" data-vtab="dashboard">Dashboard</button>
       <button class="tab" data-vtab="daily">Daily question completion</button>
+      <button class="tab" data-vtab="attendance">Attendance</button>
     </nav>
 
     <div id="tab-dashboard">
@@ -77,6 +78,15 @@
         <div class="card-head"><h3>Daily questions completed <span class="muted" id="daily-note"></span></h3></div>
         <p class="muted">Questions each student completed per day over the <b>last 10 days</b>, ending today. Days with no sync show a dot (no change recorded).</p>
         <div class="table-scroll"><table id="daily-table" class="data-table"></table></div>
+      </div>
+    </div>
+
+    <div id="tab-attendance" class="hidden">
+      <div class="card">
+        <div class="card-head"><h3>Attendance <span class="muted" id="att-note"></span></h3></div>
+        <div id="att-sheet-tabs" class="form-row" style="margin:0 0 8px;flex-wrap:wrap;gap:6px"></div>
+        <div class="form-row" style="margin:0 0 8px"><input id="att-search" placeholder="Search…" style="flex:0 0 240px" /><span id="att-count" class="muted"></span></div>
+        <div class="table-scroll" style="max-height:64vh"><table id="att-table" class="data-table"></table></div>
       </div>
     </div>
   </main>
