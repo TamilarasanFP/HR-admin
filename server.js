@@ -170,11 +170,32 @@ async function fetchAttendance(url) {
   }
   const wb = XLSX.read(buf, { type: 'buffer' });
   const sheets = wb.SheetNames.map((name) => {
-    const grid = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, blankrows: false, defval: '' })
-      .filter((r) => r.some((c) => String(c).trim() !== ''));
+    const grid = sheetToGrid(XLSX, wb.Sheets[name]);
+    // Keep header cells raw so their hyperlinks stay clickable (some tabs have
+    // no real header row — the first row is data).
     return { name, columns: grid[0] || [], rows: grid.slice(1) };
   });
   return { sheets };
+}
+// Build a grid where each cell is either a string, or { text, url } when the
+// cell carries a hyperlink (e.g. a "recording link" that shows a label).
+function sheetToGrid(XLSX, ws) {
+  const ref = ws && ws['!ref'];
+  if (!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const grid = [];
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    const row = [];
+    for (let C = range.s.c; C <= range.e.c; C++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+      if (!cell) { row.push(''); continue; }
+      const text = cell.w != null ? cell.w : (cell.v != null ? cell.v : '');
+      const url = cell.l && cell.l.Target ? cell.l.Target : null;
+      row.push(url ? { text: String(text), url: String(url) } : String(text));
+    }
+    grid.push(row);
+  }
+  return grid.filter((r) => r.some((c) => String(c && typeof c === 'object' ? (c.text || c.url) : c).trim() !== ''));
 }
 const attKey = (collegeId) => 'attendance_sheet_url:' + String(collegeId || '');
 app.get('/api/attendance', requireAdmin, async (req, res) => {

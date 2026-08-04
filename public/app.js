@@ -71,17 +71,26 @@ function renderAttSheetTabs() {
   el.innerHTML = attSheets.map((s, i) =>
     `<button class="tab${i === attSheetIdx ? ' active' : ''}" data-idx="${i}" style="padding:6px 12px;border:1px solid var(--border);border-radius:8px">${esc(s.name)} <span class="muted">(${s.rows.length})</span></button>`).join('');
 }
+// Plain text of a cell (string, or a { text, url } hyperlink object).
+function attText(v) { return v && typeof v === 'object' ? (v.text || v.url || '') : String(v ?? ''); }
+// Render a cell: hyperlink object → link; a bare URL string → link; else text.
+function attCell(v) {
+  if (v && typeof v === 'object' && v.url) return `<a href="${esc(v.url)}" target="_blank" rel="noopener">${esc(v.text || v.url)}</a>`;
+  const s = String(v ?? '').trim();
+  if (/^https?:\/\/\S+$/i.test(s)) return `<a href="${esc(s)}" target="_blank" rel="noopener">${esc(s)}</a>`;
+  return esc(attText(v));
+}
 function renderAttendance() {
   renderAttSheetTabs();
   const sheet = attSheets[attSheetIdx];
   const q = $('att-search').value.trim().toLowerCase();
   const cols = sheet ? sheet.columns : [];
-  const rows = sheet ? sheet.rows.filter((r) => !q || r.some((c) => String(c).toLowerCase().includes(q))) : [];
+  const rows = sheet ? sheet.rows.filter((r) => !q || r.some((c) => attText(c).toLowerCase().includes(q))) : [];
   $('att-count').textContent = sheet ? `${rows.length} row${rows.length === 1 ? '' : 's'}${q ? ' (filtered)' : ''}` : '';
   if (!cols.length) { $('att-table').innerHTML = sheet ? '<tbody><tr><td class="muted">This tab is empty.</td></tr></tbody>' : ''; return; }
   $('att-table').innerHTML =
-    `<thead><tr><th class="num">#</th>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>` +
-    (rows.length ? rows.map((r, i) => `<tr><td class="num">${i + 1}</td>${cols.map((_, j) => `<td>${esc(r[j] ?? '')}</td>`).join('')}</tr>`).join('')
+    `<thead><tr><th class="num">#</th>${cols.map((c) => `<th>${attCell(c)}</th>`).join('')}</tr></thead><tbody>` +
+    (rows.length ? rows.map((r, i) => `<tr><td class="num">${i + 1}</td>${cols.map((_, j) => `<td>${attCell(r[j])}</td>`).join('')}</tr>`).join('')
       : `<tr><td colspan="${cols.length + 1}" class="muted">No rows.</td></tr>`) + `</tbody>`;
 }
 $('att-sheet-tabs').addEventListener('click', (e) => {
