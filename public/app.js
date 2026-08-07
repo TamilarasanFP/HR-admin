@@ -48,12 +48,20 @@ async function enterApp() {
 async function loadAutoSyncStatus() {
   try {
     const s = await api('/api/auto-sync/status');
+    const el = $('auto-sync-note');
+    if (!s.enabled) { el.textContent = '⚪ Auto-sync off — enable with AUTO_SYNC=1 (needs HR_EMAIL/HR_PASS).'; el.style.color = ''; return; }
     const when = s.lastRun ? new Date(s.lastRun).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'never';
-    $('auto-sync-note').textContent = s.enabled
-      ? `Auto-sync ON at ${s.times.join(', ')} · last run: ${when}${s.lastResult ? ' (' + s.lastResult + ')' : ''}`
-      : 'Auto-sync off — enable with AUTO_SYNC=1 (needs HR_EMAIL/HR_PASS).';
+    const parts = [`🟢 Auto-sync ON · ${s.times.join(', ')} ${s.tz || ''}`.trim()];
+    if (s.running) parts.push('⏳ running now…');
+    parts.push(`last run: ${when}`);
+    if (s.lastResult) parts.push(s.lastResult);
+    if (!s.hasCreds) parts.push('⚠ HR_EMAIL/HR_PASS not set — runs will fail');
+    el.textContent = parts.join(' · ');
+    el.style.color = (!s.hasCreds || (s.lastResult && /fail/i.test(s.lastResult))) ? 'var(--danger)' : '';
   } catch { /* ignore */ }
 }
+// Refresh the auto-sync note periodically so a scheduled/running sync shows up live.
+setInterval(() => { if (adminToken && !document.getElementById('login-screen')?.offsetParent) loadAutoSyncStatus(); }, 60 * 1000);
 
 // ---------- Tabs ----------
 document.querySelectorAll('#tabs .tab').forEach((b) => b.addEventListener('click', () => {

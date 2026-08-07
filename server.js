@@ -771,16 +771,25 @@ async function autoSyncAll() {
     console.warn('[auto-sync] failed:', e.message);
   } finally { autoState.running = false; }
 }
-app.get('/api/auto-sync/status', requireAdmin, (_req, res) => res.json({ enabled: AUTO_SYNC, times: AUTO_TIMES, lastRun: autoState.lastRun, lastResult: autoState.lastResult, running: autoState.running }));
+app.get('/api/auto-sync/status', requireAdmin, (_req, res) => res.json({ enabled: AUTO_SYNC, times: AUTO_TIMES, tz: AUTO_TZ, hasCreds: MOCK || !!(HR_EMAIL && HR_PASS), lastRun: autoState.lastRun, lastResult: autoState.lastResult, running: autoState.running }));
 app.post('/api/auto-sync/run', requireAdmin, (_req, res) => { autoSyncAll(); res.json({ ok: true }); });
 
+// Time (and date key) in the configured timezone, so AUTO_SYNC_TIMES are the
+// admin's wall-clock times regardless of where the server runs (e.g. UTC hosts).
+const AUTO_TZ = process.env.AUTO_SYNC_TZ || 'Asia/Kolkata';
+function nowInTz() {
+  try {
+    const p = new Intl.DateTimeFormat('en-GB', { timeZone: AUTO_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date());
+    const g = (t) => p.find((x) => x.type === t).value;
+    return { hhmm: `${g('hour')}:${g('minute')}`, date: `${g('year')}-${g('month')}-${g('day')}` };
+  } catch { const d = new Date(); return { hhmm: String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'), date: d.toDateString() }; }
+}
 if (AUTO_SYNC) {
   let lastSlot = '';
   setInterval(() => {
-    const d = new Date();
-    const hhmm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-    const slot = d.toDateString() + ' ' + hhmm;
-    if (AUTO_TIMES.includes(hhmm) && lastSlot !== slot) { lastSlot = slot; autoSyncAll(); }
+    const { hhmm, date } = nowInTz();
+    const slot = date + ' ' + hhmm;
+    if (AUTO_TIMES.includes(hhmm) && lastSlot !== slot) { lastSlot = slot; console.log('[auto-sync] triggering scheduled run at', hhmm, AUTO_TZ); autoSyncAll(); }
   }, 30 * 1000).unref?.();
 }
 
@@ -790,5 +799,5 @@ app.listen(PORT, () => {
   console.log(`HackerRank Admin Dashboard → http://localhost:${PORT}${MOCK ? '  [MOCK]' : ''}`);
   console.log(`Admin login: ${ADMIN_USER} / ${ADMIN_PASS}${ADMIN_USER === 'admin' && ADMIN_PASS === 'admin' ? '  (set ADMIN_USER/ADMIN_PASS env to change)' : ''}`);
   console.log(`Storage: ${db.storageBackend()}`);
-  console.log(`Auto-sync: ${AUTO_SYNC ? 'ON at ' + AUTO_TIMES.join(', ') + (MOCK || (HR_EMAIL && HR_PASS) ? '' : ' (⚠ set HR_EMAIL/HR_PASS)') : 'off (set AUTO_SYNC=1)'}`);
+  console.log(`Auto-sync: ${AUTO_SYNC ? 'ON at ' + AUTO_TIMES.join(', ') + ' ' + AUTO_TZ + (MOCK || (HR_EMAIL && HR_PASS) ? '' : ' (⚠ set HR_EMAIL/HR_PASS)') : 'off (set AUTO_SYNC=1)'}`);
 });
