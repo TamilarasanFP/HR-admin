@@ -5,9 +5,9 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node --env-file=.env server.js",
-    "dev": "node --watch --env-file=.env server.js",
-    "mock": "MOCK=1 node --env-file=.env server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "mock": "MOCK=1 node server.js"
   },
   "engines": { "node": ">=18" },
   "dependencies": { "express": "^4.19.2", "pg": "^8.12.0", "xlsx": "^0.18.5" }

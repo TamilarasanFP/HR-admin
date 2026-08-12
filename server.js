@@ -773,6 +773,18 @@ async function autoSyncAll() {
 }
 app.get('/api/auto-sync/status', requireAdmin, (_req, res) => res.json({ enabled: AUTO_SYNC, times: AUTO_TIMES, tz: AUTO_TZ, hasCreds: MOCK || !!(HR_EMAIL && HR_PASS), lastRun: autoState.lastRun, lastResult: autoState.lastResult, running: autoState.running }));
 app.post('/api/auto-sync/run', requireAdmin, (_req, res) => { autoSyncAll(); res.json({ ok: true }); });
+// Keyed trigger for an EXTERNAL scheduler (cron-job.org, Render Cron, GitHub
+// Actions) — reliable on hosts whose in-process timers don't fire (e.g. Render
+// free instances that sleep). Set AUTO_SYNC_KEY to a secret and call:
+//   GET/POST /api/auto-sync/trigger?key=<AUTO_SYNC_KEY>
+app.all('/api/auto-sync/trigger', (req, res) => {
+  const key = req.query.key || req.get('x-sync-key');
+  if (!process.env.AUTO_SYNC_KEY) return res.status(403).json({ error: 'Trigger disabled — set AUTO_SYNC_KEY.' });
+  if (key !== process.env.AUTO_SYNC_KEY) return res.status(403).json({ error: 'Bad key.' });
+  if (autoState.running) return res.json({ ok: true, alreadyRunning: true });
+  autoSyncAll();
+  res.json({ ok: true, started: true });
+});
 
 // Time (and date key) in the configured timezone, so AUTO_SYNC_TIMES are the
 // admin's wall-clock times regardless of where the server runs (e.g. UTC hosts).
