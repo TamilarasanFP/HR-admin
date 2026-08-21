@@ -868,11 +868,11 @@ function renderStudents() {
   const start = (studentsPage - 1) * STUDENTS_PAGE;
   const rows = all.slice(start, start + STUDENTS_PAGE);
   $('students-table').innerHTML =
-    `<thead><tr><th><input type="checkbox" id="sel-all"/></th><th>#</th><th>Student</th><th>HR username</th><th>Dept</th><th>Section</th>` +
-    (hasScrape ? `<th class="num">Solved</th><th class="num">Score</th><th>Completion</th>` : '') + `</tr></thead><tbody>` +
+    `<thead><tr><th><input type="checkbox" id="sel-all"/></th><th>#</th><th class="grow">Student</th><th class="grow">HR username</th><th>Dept</th><th>Section</th>` +
+    (hasScrape ? `<th class="num">Solved</th><th class="num">Score</th><th class="comp">Completion</th>` : '') + `</tr></thead><tbody>` +
     (rows.length ? rows.map((r, idx) =>
-      `<tr><td><input type="checkbox" class="sel" value="${r.id}"/></td><td class="num">${start + idx + 1}</td><td><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername || '(unnamed)')}</a></td><td>${r.hasHrId ? esc(r.hrUsername) + (r.inContest ? '' : ' <span class="muted">·absent</span>') : '<span class="badge warn">no HR id</span>'}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td>` +
-      (hasScrape ? `<td class="num">${r.solved}/${r.totalQ}</td><td class="num">${r.score}</td><td><div class="bar"><span style="width:${r.completion}%"></span></div></td>` : '') + `</tr>`).join('')
+      `<tr><td><input type="checkbox" class="sel" value="${r.id}"/></td><td class="num">${start + idx + 1}</td><td class="grow"><a class="user-link" data-user="${esc(r.hrUsername)}">${esc(r.name || r.hrUsername || '(unnamed)')}</a></td><td class="grow">${r.hasHrId ? esc(r.hrUsername) + (r.inContest ? '' : ' <span class="muted">·absent</span>') : '<span class="badge warn">no HR id</span>'}</td><td>${esc(r.department || '—')}</td><td>${esc(r.section || '—')}</td>` +
+      (hasScrape ? `<td class="num">${r.solved}/${r.totalQ}</td><td class="num">${r.score}</td><td class="comp"><div class="bar"><span style="width:${r.completion}%"></span></div></td>` : '') + `</tr>`).join('')
       : `<tr><td colspan="9" class="muted">No students. Upload a roster (Upload tab).</td></tr>`) + `</tbody>`;
   const selAll = $('sel-all'); if (selAll) selAll.addEventListener('change', () => document.querySelectorAll('#students-table .sel').forEach((c) => (c.checked = selAll.checked)));
   const from = all.length ? start + 1 : 0;

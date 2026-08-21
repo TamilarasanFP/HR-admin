@@ -60,6 +60,13 @@ async function cachedScrapeSeries(slug) {
   const v = await db.getScrapeSeries(slug); scrapeCache.set(k, v); return v;
 }
 function invalidateScrapeCache(slug) { scrapeCache.delete('latest:' + slug); scrapeCache.delete('series:' + slug); }
+// Trim old scrapes for a course after each save (keep latest-per-day, last 20 days).
+// Fire-and-forget; a prune failure must never break a sync. Works for sync + async backends.
+function pruneScrapesFor(slug) {
+  Promise.resolve(db.pruneScrapes(slug, 20))
+    .then((r) => { if (r && r.deleted) console.log(`[prune] ${slug}: removed ${r.deleted} old scrape(s)`); })
+    .catch((e) => console.warn('[prune] failed for', slug, e.message));
+}
 
 // ---------------- Admin auth (token-based) ----------------
 const adminTokens = new Set();
@@ -376,7 +383,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     if (MOCK || session.mock) {
       const dash = buildMockDashboard(slug, 60); const total = dash.summary.totalUsers;
       for (let i = 1; i <= total && !aborted; i++) { send('progress', { phase: 'comparing', completed: i, total }); await sleep(15); }
-      if (!aborted) { const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug); send('done', { ...saved, summary: dash.summary, contest: dash.contest }); }
+      if (!aborted) { const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug); pruneScrapesFor(slug); send('done', { ...saved, summary: dash.summary, contest: dash.contest }); }
       return res.end();
     }
     const { jar, csrfToken } = session;
@@ -397,7 +404,7 @@ app.get('/api/scrape-stream', async (req, res) => {
     // Build the user rows from the target list (roster), pulling rank from the leaderboard when present.
     const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
     const dash = assembleDashboard({ slug, contest, leaderboard: entries, questions, userMap, reference });
-    const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug);
+    const saved = await db.saveScrape(slug, dash); invalidateScrapeCache(slug); pruneScrapesFor(slug);
     send('done', { ...saved, summary: dash.summary, contest: dash.contest, source, capped });
     res.end();
   } catch (e) { send('failed', { error: e.message }); res.end(); }
@@ -738,7 +745,7 @@ app.get('/student', (_req, res) => res.sendFile(path.join(__dirname, 'public', '
 const autoState = { lastRun: null, lastResult: null, running: false };
 async function scrapeAndSave(session, contest, onProgress) {
   const slug = contest.slug;
-  if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); invalidateScrapeCache(slug); return { slug, users: dash.summary.totalUsers }; }
+  if (MOCK || session.mock) { const dash = buildMockDashboard(slug, 60); await db.saveScrape(slug, dash); invalidateScrapeCache(slug); pruneScrapesFor(slug); return { slug, users: dash.summary.totalUsers }; }
   const { jar, csrfToken } = session;
   let leaderboard = [];
   try { leaderboard = await fetchAllLeaderboard({ jar, csrfToken, slug }); } catch { /* ranks are optional; full leaderboard */ }
@@ -749,7 +756,7 @@ async function scrapeAndSave(session, contest, onProgress) {
   const { contest: c, questions, userMap } = await buildMatrix({ jar, csrfToken, slug, hackers: targets, reference, concurrency: 8, onProgress });
   const entries = targets.map((u) => ({ username: u, rank: rankMap.get(u.toLowerCase()) ?? null }));
   const dash = assembleDashboard({ slug, contest: c, leaderboard: entries, questions, userMap, reference });
-  await db.saveScrape(slug, dash); invalidateScrapeCache(slug);
+  await db.saveScrape(slug, dash); invalidateScrapeCache(slug); pruneScrapesFor(slug);
   return { slug, users: dash.summary.totalUsers };
 }
 async function autoSyncAll() {

@@ -48,6 +48,12 @@ button.ghost.danger{background:transparent;color:var(--danger);border-color:rgba
 .data-table tbody tr:hover{background:rgba(255,255,255,.03)}
 .data-table td.num,.data-table th.num{text-align:right;font-variant-numeric:tabular-nums}
 .data-table td.sticky-name,.data-table th.sticky-name{position:sticky;left:0;background:var(--surface);z-index:1}
+/* Students table fills the width evenly: the Completion bar is a fixed moderate
+   width; the two name columns share the remaining space; the rest size to content. */
+#students-table{width:100%;table-layout:auto}
+#students-table th.comp,#students-table td.comp{width:220px}
+#students-table td.comp .bar{width:100%;min-width:0}
+#students-table th.grow,#students-table td.grow{width:50%}
 .data-table thead th.sticky-name{z-index:3;background:var(--surface2)}
 .bar{height:6px;background:var(--surface2);border-radius:4px;overflow:hidden;min-width:70px}
 .bar>span{display:block;height:100%;background:var(--accent)}
