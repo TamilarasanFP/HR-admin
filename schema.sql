@@ -1,7 +1,7 @@
--- HackerRank Admin Dashboard — Supabase / Postgres schema.
+-- HackerRank Admin Dashboard — Supabase / Postgres schema (with hc_ prefix).
 -- Run this once in the Supabase SQL editor (Project → SQL Editor → New query).
 
-create table if not exists colleges (
+create table if not exists hc_colleges (
   id           bigint generated always as identity primary key,
   name         text unique,
   access_code  text,
@@ -10,7 +10,7 @@ create table if not exists colleges (
   created_at   timestamptz default now()
 );
 
-create table if not exists students (
+create table if not exists hc_students (
   id           bigint generated always as identity primary key,
   college      text,
   name         text,
@@ -25,7 +25,7 @@ create table if not exists students (
   unique (college, username_key)
 );
 
-create table if not exists contests (
+create table if not exists hc_contests (
   id           bigint generated always as identity primary key,
   college      text,
   name         text,
@@ -35,13 +35,13 @@ create table if not exists contests (
   created_at   timestamptz default now()
 );
 
-create table if not exists contest_students (
+create table if not exists hc_contest_students (
   contest_id   bigint,
   username_key text,
   primary key (contest_id, username_key)
 );
 
-create table if not exists scrapes (
+create table if not exists hc_scrapes (
   id              bigint generated always as identity primary key,
   slug            text,
   contest_name    text,
@@ -51,29 +51,39 @@ create table if not exists scrapes (
   created_at      timestamptz default now()
 );
 
-create table if not exists topics (
+create table if not exists hc_topics (
   slug     text,
   question text,
   topic    text,
   primary key (slug, question)
 );
 
-create table if not exists topic_videos (
+create table if not exists hc_topic_videos (
   slug      text,
   topic     text,
   video_url text,
   primary key (slug, topic)
 );
 
-create table if not exists question_categories (
+create table if not exists hc_question_categories (
   slug     text,
   question text,
   category text,
   primary key (slug, question)
 );
 
+create table if not exists hc_app_settings (
+  key   text primary key,
+  value text
+);
+
 -- Helpful indexes
-create index if not exists idx_students_college on students (college);
-create index if not exists idx_contests_college on contests (college);
-create index if not exists idx_scrapes_slug on scrapes (slug);
-create index if not exists idx_contest_students_contest on contest_students (contest_id);
+create index if not exists idx_hc_students_college on hc_students (college);
+create index if not exists idx_hc_students_college_name on hc_students (college, name);
+create index if not exists idx_hc_contests_college on hc_contests (college);
+create index if not exists idx_hc_contests_share_token on hc_contests (share_token);
+create index if not exists idx_hc_contest_students_contest on hc_contest_students (contest_id);
+create index if not exists idx_hc_scrapes_slug_id on hc_scrapes (slug, id desc);
+create index if not exists idx_hc_topics_slug on hc_topics (slug);
+create index if not exists idx_hc_topic_videos_slug on hc_topic_videos (slug);
+create index if not exists idx_hc_qcat_slug on hc_question_categories (slug);
