@@ -328,7 +328,7 @@ app.post('/api/hr/connect', requireAdmin, async (req, res) => {
   } catch (e) { res.status(401).json({ error: e.message }); }
 });
 
-const SCRAPE_CAP = 2000; // max users compared per scrape
+const SCRAPE_CAP = 3000; // max users compared per scrape
 
 // Resolve which usernames to scrape for a contest: the mapped roster (capped),
 // falling back to the leaderboard usernames if no students are mapped.
